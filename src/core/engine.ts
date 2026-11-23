@@ -487,6 +487,7 @@ export class QuickExecutionEngine {
   private readonly sanitizeAwsUiTags: boolean;
   private readonly workingSessionIds = new Map<string, string>();
   private readonly warmThreads = new Map<string, { threadId: string; expiresAt: number }>();
+  private readonly overflowSummaryCache = new Map<string, { summary: string; expiresAt: number }>();
 
   private warmKey(
     scope: string | undefined,
@@ -1400,6 +1401,14 @@ export class QuickExecutionEngine {
     lease: ReturnType<UpstreamKeyPool["leaseKey"]>,
     parentSignal?: AbortSignal,
   ): Promise<string | undefined> {
+    const cacheKey = crypto.createHash("sha256").update(middleSample).digest("hex");
+    const now = Date.now();
+    const cached = this.overflowSummaryCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return cached.summary;
+    }
+    if (cached) this.overflowSummaryCache.delete(cacheKey);
+
     const ac = new AbortController();
     const onParentAbort = () => ac.abort();
     parentSignal?.addEventListener("abort", onParentAbort, { once: true });
@@ -1426,7 +1435,17 @@ export class QuickExecutionEngine {
       for await (const ev of this.executeTurnWithLease(summaryTurn, subLease, true)) {
         if (ev.type === "text") out += ev.text;
       }
-      return out.trim() || undefined;
+      const trimmed = out.trim();
+      if (trimmed) {
+        while (this.overflowSummaryCache.size >= 32) {
+          const oldest = this.overflowSummaryCache.keys().next().value;
+          if (!oldest) break;
+          this.overflowSummaryCache.delete(oldest);
+        }
+        this.overflowSummaryCache.set(cacheKey, { summary: trimmed, expiresAt: Date.now() + 30 * 60 * 1000 });
+        return trimmed;
+      }
+      return undefined;
     } catch {
       return undefined;
     } finally {

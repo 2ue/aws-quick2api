@@ -383,6 +383,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       return;
     }
     let doneReason: string | undefined;
+    let settled = false;
     try {
       for await (const ev of events) {
         if (ev.type === "thinking") traceLogger.recordThinkingDelta(traceId, ev.text);
@@ -394,11 +395,17 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         } else if (ev.type === "done") doneReason = ev.stopReason;
         yield ev;
       }
+      settled = true;
       traceLogger.finishSuccess(traceId, doneReason);
     } catch (err) {
+      settled = true;
       const gwErr = mapSdkError(err);
       traceLogger.finishError(traceId, gwErr.status, gwErr.message);
       throw gwErr;
+    } finally {
+      if (!settled) {
+        traceLogger.finishError(traceId, 499, "Client disconnected before stream completed");
+      }
     }
   }
 
@@ -732,9 +739,12 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         );
 
         if (turn.stream) {
+          const approxPayloadBytes =
+            Buffer.byteLength(turn.fullTranscriptText || "", "utf8") +
+            Buffer.byteLength(turn.systemPrompt || "", "utf8") +
+            (turn.tools.length > 0 ? Buffer.byteLength(JSON.stringify(turn.tools), "utf8") : 0);
           const flushEarly =
-            keyPool.enabledKeyCount() > 0 &&
-            Buffer.byteLength(turn.fullTranscriptText || "", "utf8") > SSE_EARLY_FLUSH_BYTES;
+            keyPool.enabledKeyCount() > 0 && approxPayloadBytes > SSE_EARLY_FLUSH_BYTES;
           await pipeSseStream(
             res,
             protocolAdapter.streamSse(events, turn),
