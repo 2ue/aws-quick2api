@@ -18,6 +18,8 @@ export interface NormalizedTool {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
+  /** OpenAI Responses API tool wire kind (defaults to `"function"`). */
+  toolKind?: "function" | "custom" | "local_shell";
 }
 
 export type NormalizedImage =

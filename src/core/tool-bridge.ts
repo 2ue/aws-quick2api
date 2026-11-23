@@ -38,21 +38,25 @@ function compactJsonSchema(node: unknown, maxDescLen: number, depth = 0): unknow
 }
 
 /**
- * Soften direct identity-override phrases from third-party CLI clients (e.g. Claude Code)
- * that clash with AWS Quick's built-in identity and trigger false-positive refusals,
- * while preserving all coding rules, workspace paths, and task instructions.
+ * Soften direct identity-override phrases from third-party CLI/IDE agents (e.g. Claude Code,
+ * Codex, Cline, Roo Code, Kilo, Cursor, OpenCode, Hermes) that clash with AWS Quick's built-in
+ * identity and trigger false-positive refusals, while preserving all coding rules, workspace
+ * paths, and task instructions.
  */
 export function sanitizeClientSystemPromptForQuick(systemPrompt: string, hasTools: boolean): string {
-  if (!systemPrompt) return systemPrompt;
-  if (!hasTools) return systemPrompt;
+  if (!systemPrompt || !hasTools) return systemPrompt;
   return systemPrompt
     .replace(
-      /\bYou are Claude Code\b[^\n.]*\.?/gi,
-      "You are assisting a developer through an external coding CLI client.",
+      /\bYou are (?:Claude Code|Codex|Cline|Roo Code|Roo|Kilo Code|Kilo|Cursor|OpenCode|Hermes)\b[^\n.]*\.?/gi,
+      "You are assisting a developer through an external coding client.",
     )
     .replace(
       /\bYou are an interactive CLI tool\b/gi,
       "You are assisting a developer using an interactive CLI client",
+    )
+    .replace(
+      /\bYou are a coding agent running in[^\n.]*\.?/gi,
+      "You are assisting a developer working in a local coding environment.",
     );
 }
 

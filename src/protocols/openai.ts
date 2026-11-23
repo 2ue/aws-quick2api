@@ -84,13 +84,49 @@ export function parseOpenAiTools(rawTools: unknown): {
       customTools.push({
         name,
         ...(typeof fn.description === "string" && fn.description ? { description: fn.description } : {}),
-        inputSchema: isRecord(fn.parameters) ? fn.parameters : { type: "object", properties: {} }
+        inputSchema: isRecord(fn.parameters) ? fn.parameters : { type: "object", properties: {} },
+        toolKind: "function",
       });
     } else if (item.type === "function" && typeof item.name === "string" && item.name.trim()) {
       customTools.push({
         name: item.name.trim(),
         ...(typeof item.description === "string" && item.description ? { description: item.description } : {}),
-        inputSchema: isRecord(item.parameters) ? item.parameters : { type: "object", properties: {} }
+        inputSchema: isRecord(item.parameters) ? item.parameters : { type: "object", properties: {} },
+        toolKind: "function",
+      });
+    } else if (rawType === "custom" && typeof item.name === "string" && item.name.trim()) {
+      // OpenAI Responses / Codex CLI free-form custom tools (e.g. `apply_patch`)
+      customTools.push({
+        name: item.name.trim(),
+        ...(typeof item.description === "string" && item.description ? { description: item.description } : {}),
+        inputSchema: {
+          type: "object",
+          properties: {
+            input: { type: "string", description: "Raw tool input text payload" },
+          },
+          required: ["input"],
+        },
+        toolKind: "custom",
+      });
+    } else if (rawType === "local_shell" || rawType === "shell") {
+      // OpenAI Responses / Codex CLI local shell tool
+      const name = typeof item.name === "string" && item.name.trim() ? item.name.trim() : rawType;
+      customTools.push({
+        name,
+        description:
+          typeof item.description === "string" && item.description
+            ? item.description
+            : "Propose a shell command for the local CLI runner to execute.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            command: { type: "array", items: { type: "string" }, description: "Command argv array" },
+            working_directory: { type: "string" },
+            timeout_ms: { type: "number" },
+          },
+          required: ["command"],
+        },
+        toolKind: rawType === "local_shell" ? "local_shell" : "function",
       });
     }
   }
@@ -105,8 +141,11 @@ export function parseOpenAiToolChoice(raw: unknown): ToolChoiceMode {
     if (raw.type === "function" && isRecord(raw.function) && typeof raw.function.name === "string") {
       return { type: "tool", name: raw.function.name.trim() };
     }
-    if (raw.type === "function" && typeof raw.name === "string") {
+    if ((raw.type === "function" || raw.type === "custom") && typeof raw.name === "string") {
       return { type: "tool", name: raw.name.trim() };
+    }
+    if (raw.type === "local_shell") {
+      return { type: "tool", name: "local_shell" };
     }
   }
   return "auto";
@@ -360,7 +399,11 @@ export function parseResponsesRequest(
     for (const item of body.input) {
       if (!isRecord(item)) continue;
       const itemType = typeof item.type === "string" ? item.type : "message";
-      if (itemType === "function_call_output") {
+      if (
+        itemType === "function_call_output" ||
+        itemType === "custom_tool_call_output" ||
+        itemType === "local_shell_call_output"
+      ) {
         hasToolResults = true;
         const callId = typeof item.call_id === "string" ? item.call_id.trim() : "";
         let outStr = "";
@@ -386,11 +429,25 @@ export function parseResponsesRequest(
         items.push({ role: "tool", text: outStr, images: outImages, hasTools: true });
         continue;
       }
-      if (itemType === "function_call") {
+      if (itemType === "function_call" || itemType === "custom_tool_call" || itemType === "local_shell_call") {
         trailingToolResults.length = 0;
-        const name = typeof item.name === "string" ? item.name : "";
-        const args = typeof item.arguments === "string" ? item.arguments : "{}";
         const callId = typeof item.call_id === "string" ? item.call_id : "";
+        const name =
+          itemType === "local_shell_call"
+            ? "local_shell"
+            : typeof item.name === "string"
+              ? item.name
+              : "";
+        const args =
+          itemType === "custom_tool_call"
+            ? typeof item.input === "string"
+              ? item.input
+              : JSON.stringify(item.input ?? "")
+            : itemType === "local_shell_call"
+              ? JSON.stringify(item.action ?? {})
+              : typeof item.arguments === "string"
+                ? item.arguments
+                : "{}";
         transcriptLines.push(`[ASSISTANT_TOOL_CALLS]:\n${name}(${args}) [id=${callId}]`);
         items.push({ role: "assistant", text: "", images: [], hasTools: true });
         continue;
@@ -607,15 +664,50 @@ export const openAiResponsesAdapter: ProtocolAdapter = {
         content: [{ type: "output_text", text, annotations: [] }]
       });
     }
+    const toolKindByName = new Map(turn.tools.map((t) => [t.name, t.toolKind ?? "function"]));
     for (const tc of toolCalls) {
-      output.push({
-        id: `fc_${crypto.randomUUID().replace(/-/g, "")}`,
-        type: "function_call",
-        status: "completed",
-        call_id: tc.id,
-        name: tc.name,
-        arguments: tc.argumentsJson
-      });
+      const kind = toolKindByName.get(tc.name) ?? "function";
+      if (kind === "custom") {
+        const inputStr = typeof tc.argsObject.input === "string" ? tc.argsObject.input : tc.argumentsJson;
+        output.push({
+          id: `ctc_${crypto.randomUUID().replace(/-/g, "")}`,
+          type: "custom_tool_call",
+          status: "completed",
+          call_id: tc.id,
+          name: tc.name,
+          input: inputStr,
+        });
+      } else if (kind === "local_shell") {
+        const rawCmd = tc.argsObject.command;
+        const cmd = Array.isArray(rawCmd)
+          ? rawCmd.map((x) => String(x))
+          : typeof rawCmd === "string"
+            ? ["bash", "-lc", rawCmd]
+            : [];
+        output.push({
+          id: `lsh_${crypto.randomUUID().replace(/-/g, "")}`,
+          type: "local_shell_call",
+          status: "completed",
+          call_id: tc.id,
+          action: {
+            type: "exec",
+            command: cmd,
+            ...(typeof tc.argsObject.working_directory === "string"
+              ? { working_directory: tc.argsObject.working_directory }
+              : {}),
+            ...(typeof tc.argsObject.timeout_ms === "number" ? { timeout_ms: tc.argsObject.timeout_ms } : {}),
+          },
+        });
+      } else {
+        output.push({
+          id: `fc_${crypto.randomUUID().replace(/-/g, "")}`,
+          type: "function_call",
+          status: "completed",
+          call_id: tc.id,
+          name: tc.name,
+          arguments: tc.argumentsJson,
+        });
+      }
     }
 
     const totalInput = metrics.inputTokens + metrics.cacheReadTokens;
@@ -738,17 +830,51 @@ export const openAiResponsesAdapter: ProtocolAdapter = {
         } else if (ev.type === "tool_calls") {
           yield* closeOpen();
           sawToolCalls = true;
+          const toolKindByName = new Map(turn.tools.map((t) => [t.name, t.toolKind ?? "function"]));
           for (const tc of ev.calls) {
             const index = output.length;
-            const id = newId("fc");
-            const base = { id, type: "function_call", call_id: tc.id, name: tc.name };
+            const kind = toolKindByName.get(tc.name) ?? "function";
             output.push({});
-            yield sse("response.output_item.added", { output_index: index, item: { ...base, status: "in_progress", arguments: "" } });
-            yield sse("response.function_call_arguments.delta", { item_id: id, output_index: index, delta: tc.argumentsJson });
-            yield sse("response.function_call_arguments.done", { item_id: id, output_index: index, name: tc.name, arguments: tc.argumentsJson });
-            const item = { ...base, status: "completed", arguments: tc.argumentsJson };
-            output[index] = item;
-            yield sse("response.output_item.done", { output_index: index, item });
+            if (kind === "custom") {
+              const id = newId("ctc");
+              const inputStr = typeof tc.argsObject.input === "string" ? tc.argsObject.input : tc.argumentsJson;
+              const base = { id, type: "custom_tool_call", call_id: tc.id, name: tc.name };
+              yield sse("response.output_item.added", { output_index: index, item: { ...base, status: "in_progress", input: "" } });
+              yield sse("response.custom_tool_call_input.delta", { item_id: id, output_index: index, delta: inputStr });
+              yield sse("response.custom_tool_call_input.done", { item_id: id, output_index: index, input: inputStr });
+              const item = { ...base, status: "completed", input: inputStr };
+              output[index] = item;
+              yield sse("response.output_item.done", { output_index: index, item });
+            } else if (kind === "local_shell") {
+              const id = newId("lsh");
+              const rawCmd = tc.argsObject.command;
+              const cmd = Array.isArray(rawCmd)
+                ? rawCmd.map((x) => String(x))
+                : typeof rawCmd === "string"
+                  ? ["bash", "-lc", rawCmd]
+                  : [];
+              const action = {
+                type: "exec",
+                command: cmd,
+                ...(typeof tc.argsObject.working_directory === "string"
+                  ? { working_directory: tc.argsObject.working_directory }
+                  : {}),
+                ...(typeof tc.argsObject.timeout_ms === "number" ? { timeout_ms: tc.argsObject.timeout_ms } : {}),
+              };
+              const item = { id, type: "local_shell_call", call_id: tc.id, status: "completed", action };
+              yield sse("response.output_item.added", { output_index: index, item: { ...item, status: "in_progress" } });
+              output[index] = item;
+              yield sse("response.output_item.done", { output_index: index, item });
+            } else {
+              const id = newId("fc");
+              const base = { id, type: "function_call", call_id: tc.id, name: tc.name };
+              yield sse("response.output_item.added", { output_index: index, item: { ...base, status: "in_progress", arguments: "" } });
+              yield sse("response.function_call_arguments.delta", { item_id: id, output_index: index, delta: tc.argumentsJson });
+              yield sse("response.function_call_arguments.done", { item_id: id, output_index: index, name: tc.name, arguments: tc.argumentsJson });
+              const item = { ...base, status: "completed", arguments: tc.argumentsJson };
+              output[index] = item;
+              yield sse("response.output_item.done", { output_index: index, item });
+            }
           }
         } else if (ev.type === "usage") {
           metrics = ev.metrics;

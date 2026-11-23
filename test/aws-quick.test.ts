@@ -23,8 +23,18 @@ import { parseQuickCredential } from "../src/aws-quick/outpost-singleton.js";
 import { parseWebCurlOrCredential, serializeWebCredential } from "../src/aws-quick/web-client.js";
 import { buildQuickImageAttachments, compactOversizedPrompt, estimatePromptTokens, splitPromptIntoSafeChunks } from "../src/core/engine.js";
 import { UpstreamKeyPool } from "../src/core/key-pool.js";
-import { buildToolBridgePrompt, parseToolCallsFromText, StreamingToolCallFilter } from "../src/core/tool-bridge.js";
+import {
+  buildToolBridgePrompt,
+  parseToolCallsFromText,
+  sanitizeClientSystemPromptForQuick,
+  StreamingToolCallFilter,
+} from "../src/core/tool-bridge.js";
 import { StreamingUiTagSanitizer } from "../src/core/ui-tag-sanitizer.js";
+import {
+  openAiResponsesAdapter,
+  parseChatCompletionsRequest,
+  parseResponsesRequest,
+} from "../src/protocols/openai.js";
 import { AWS_QUICK_MODELS, formatOpenAiModelList, resolveModelSelection } from "../src/services/model-catalog.js";
 import { ClientGatewayKeyManager } from "../src/services/client-keys.js";
 import { checkLatestVersion } from "../src/services/update-checker.js";
@@ -564,5 +574,88 @@ describe("Credential parser & ClientKeyStore", () => {
     assert.equal(attachments.length, 1);
     assert.equal(attachments[0]!.mimeType, "image/jpeg");
     assert.ok(attachments[0]!.data.length <= 45_000, `Expected <=45KB data URI, got ${attachments[0]!.data.length}`);
+  });
+
+  it("supports Codex CLI custom/local_shell tools, multi-turn Chat Completions tool_calls, and multi-client identity sanitization", async () => {
+    // 1. Multi-client identity-clash sanitization (only active when tools are attached)
+    const rawCodex = "You are Codex, a coding agent running in the user's terminal.\nKeep edits minimal.";
+    const cleanedCodex = sanitizeClientSystemPromptForQuick(rawCodex, true);
+    assert.ok(!cleanedCodex.includes("You are Codex"));
+    assert.ok(cleanedCodex.includes("Keep edits minimal."));
+    assert.equal(sanitizeClientSystemPromptForQuick(rawCodex, false), rawCodex);
+    assert.ok(!sanitizeClientSystemPromptForQuick("You are Hermes, an autonomous agent.", true).includes("You are Hermes"));
+
+    // 2. Codex Responses API with `custom` (apply_patch) + `local_shell` tools & tool call/output history
+    const codexTurn = parseResponsesRequest({
+      model: "quick-balanced",
+      instructions: rawCodex,
+      tools: [
+        { type: "custom", name: "apply_patch", description: "Apply unified patch" },
+        { type: "local_shell" },
+      ],
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "Patch foo.ts and run tests" }] },
+        { type: "custom_tool_call", call_id: "call_patch_1", name: "apply_patch", input: "*** Begin Patch\n*** End Patch" },
+        { type: "custom_tool_call_output", call_id: "call_patch_1", output: "Patched foo.ts" },
+        { type: "local_shell_call", call_id: "call_sh_1", action: { type: "exec", command: ["npm", "test"] } },
+        { type: "local_shell_call_output", call_id: "call_sh_1", output: "All tests passed" },
+      ],
+    });
+    assert.equal(codexTurn.tools.length, 2);
+    assert.equal(codexTurn.tools[0]!.toolKind, "custom");
+    assert.equal(codexTurn.tools[1]!.toolKind, "local_shell");
+    assert.equal(codexTurn.hasToolResults, true);
+    assert.ok(codexTurn.fullTranscriptText.includes("Patched foo.ts"));
+    assert.ok(codexTurn.fullTranscriptText.includes("All tests passed"));
+
+    // Verify Responses adapter emits `custom_tool_call` and `local_shell_call` wire formats
+    async function* fakeToolEvents() {
+      yield {
+        type: "tool_calls" as const,
+        calls: [
+          {
+            id: "call_c1",
+            name: "apply_patch",
+            argumentsJson: JSON.stringify({ input: "*** Begin Patch\n*** End Patch" }),
+            argsObject: { input: "*** Begin Patch\n*** End Patch" },
+          },
+          {
+            id: "call_s1",
+            name: "local_shell",
+            argumentsJson: JSON.stringify({ command: ["ls", "-la"] }),
+            argsObject: { command: ["ls", "-la"] },
+          },
+        ],
+      };
+      yield { type: "done" as const, stopReason: "tool_calls" as const };
+    }
+    const respJson = await openAiResponsesAdapter.collectJson(fakeToolEvents(), codexTurn);
+    const outItems = respJson.output as Array<Record<string, unknown>>;
+    assert.equal(outItems[0]!.type, "custom_tool_call");
+    assert.equal(outItems[0]!.input, "*** Begin Patch\n*** End Patch");
+    assert.equal(outItems[1]!.type, "local_shell_call");
+    assert.deepEqual((outItems[1]!.action as Record<string, unknown>).command, ["ls", "-la"]);
+
+    // 3. OpenAI Chat Completions multi-turn tool_calls + role:"tool"
+    const chatTurn = parseChatCompletionsRequest({
+      model: "quick-balanced",
+      tools: [
+        { type: "function", function: { name: "read_file", description: "Read file", parameters: { type: "object", properties: { path: { type: "string" } } } } },
+      ],
+      messages: [
+        { role: "system", content: "You are Cline, an AI coding assistant." },
+        { role: "user", content: "Read package.json" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "read_file", arguments: "{\"path\":\"package.json\"}" } }],
+        },
+        { role: "tool", tool_call_id: "call_1", name: "read_file", content: "{\"name\":\"demo\"}" },
+      ],
+    });
+    assert.equal(chatTurn.hasToolResults, true);
+    assert.equal(chatTurn.trailingToolResults.length, 1);
+    assert.equal(chatTurn.trailingToolResults[0]!.toolCallId, "call_1");
+    assert.ok(chatTurn.fullTranscriptText.includes("[TOOL_RESULT name=read_file id=call_1]:"));
   });
 });
