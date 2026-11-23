@@ -51,13 +51,27 @@ flowchart LR
 
 ## Screenshots
 
-| Overview Dashboard | Client Sub-Keys & Quick Connect |
-| :---: | :---: |
-| ![Overview](./docs/screenshots/overview.png) | ![Sub-Keys](./docs/screenshots/subkeys.png) |
+### Overview Dashboard
 
-| Model Access Control | Routing, Affinity & Incognito |
-| :---: | :---: |
-| ![Models](./docs/screenshots/models.png) | ![Routing](./docs/screenshots/routing.png) |
+![Overview](./docs/screenshots/overview.png)
+
+### Credentials & Quota Pool
+
+![Credentials & Quota Pool](./docs/screenshots/credentials.png)
+
+<details>
+<summary>More Console Views (Client Sub-Keys / Model Access / Routing & Incognito)</summary>
+
+#### Client Sub-Keys & Quick Connect
+![Sub-Keys](./docs/screenshots/subkeys.png)
+
+#### Model Access Control
+![Models](./docs/screenshots/models.png)
+
+#### Routing, Affinity & Incognito
+![Routing](./docs/screenshots/routing.png)
+
+</details>
 
 ---
 

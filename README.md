@@ -51,13 +51,27 @@ flowchart LR
 
 ## 界面预览
 
-| 总览监控 | 网关子密钥与快捷接入 |
-| :---: | :---: |
-| ![总览监控](./docs/screenshots/overview.png) | ![网关子密钥](./docs/screenshots/subkeys.png) |
+### 总览监控
 
-| 模型权限管理 | 路由、亲和与无痕策略 |
-| :---: | :---: |
-| ![模型权限管理](./docs/screenshots/models.png) | ![路由与亲和策略](./docs/screenshots/routing.png) |
+![总览监控](./docs/screenshots/overview.png)
+
+### 凭证与额度池
+
+![凭证与额度池](./docs/screenshots/credentials.png)
+
+<details>
+<summary>展开查看更多管理台页面（网关子密钥 / 模型权限 / 路由与无痕策略）</summary>
+
+#### 网关子密钥与快捷接入
+![网关子密钥](./docs/screenshots/subkeys.png)
+
+#### 模型权限管理
+![模型权限管理](./docs/screenshots/models.png)
+
+#### 路由、亲和与无痕策略
+![路由与亲和策略](./docs/screenshots/routing.png)
+
+</details>
 
 ---
 
