@@ -1,4 +1,5 @@
 import { toolContract } from "./tool-contract.js";
+import { buildClientToolReminder } from "./tool-bridge.js";
 import { uploadImageAttachment, type NativeAttachment } from "../aws-quick/attachment-upload.js";
 import { routeSelection } from "../services/model-router.js";
 import crypto from "node:crypto";
@@ -895,6 +896,8 @@ export class QuickExecutionEngine {
           : initialCompact.prompt;
       }
     }
+    const clientToolReminder = buildClientToolReminder(turn.tools, turn.toolChoice);
+    if (clientToolReminder) prompt += `\n\n${clientToolReminder}`;
     const toolFilter = toolBridgePrompt ? new StreamingToolCallFilter() : null;
     const uiTagSanitizer = this.sanitizeAwsUiTags ? new StreamingUiTagSanitizer() : null;
 

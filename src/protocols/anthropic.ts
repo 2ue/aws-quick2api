@@ -85,12 +85,15 @@ function flattenToolResultContent(content: unknown): { text: string; images: Nor
       const img = parseAnthropicImageBlock(b);
       if (img) images.push(img);
     } else if (b.type === "document") texts.push(documentBlockToText(b));
+    else if (b.type === "tool_reference" && typeof b.tool_name === "string" && b.tool_name.trim()) {
+      texts.push(`[CLIENT_TOOL_LOADED]: ${b.tool_name.trim()}`);
+    }
     else assertSupportedBlockType(typeof b.type === "string" ? b.type : "");
   }
   return { text: texts.join("\n"), images };
 }
 
-export function parseAnthropicTools(rawTools: unknown): {
+export function parseAnthropicTools(rawTools: unknown, loadedTools: ReadonlySet<string> = new Set()): {
   customTools: NormalizedTool[];
   nativeSdkTools: Array<"webSearch" | "webFetch">;
 } {
@@ -100,7 +103,7 @@ export function parseAnthropicTools(rawTools: unknown): {
 
   for (const item of rawTools) {
     if (!isRecord(item)) continue;
-    if (item.defer_loading === true) continue;
+    if (item.defer_loading === true && !loadedTools.has(String(item.name))) continue;
     const rawType = typeof item.type === "string" ? item.type.trim().toLowerCase() : "";
     if (rawType.startsWith("web_search")) {
       nativeSet.add("webSearch");
@@ -173,7 +176,24 @@ export function parseAnthropicMessagesRequest(
 
   const requestedModel = requireModelField(body);
   const systemParts = [flattenAnthropicSystem(body.system)].filter((part): part is string => Boolean(part));
-  const { customTools: tools, nativeSdkTools } = parseAnthropicTools(body.tools);
+  const loadedTools = new Set<string>();
+  for (const message of body.messages) {
+    if (!isRecord(message) || !Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (!isRecord(block) || block.type !== "tool_result" || !Array.isArray(block.content)) continue;
+      for (const reference of block.content) {
+        if (isRecord(reference) && reference.type === "tool_reference" && typeof reference.tool_name === "string") {
+          loadedTools.add(reference.tool_name);
+        }
+      }
+    }
+  }
+  const { customTools: tools, nativeSdkTools } = parseAnthropicTools(body.tools, loadedTools);
+  for (const name of loadedTools) {
+    if (!tools.some((tool) => tool.name === name)) {
+      throw new GatewayError(`Loaded client tool '${name}' is missing its schema.`, 400, "invalid_tool_schema");
+    }
+  }
   const toolChoice = parseAnthropicToolChoice(body.tool_choice);
 
   const items: AnthropicTurnLine[] = [];
@@ -183,6 +203,7 @@ export function parseAnthropicMessagesRequest(
   let trailingImages: NormalizedImage[] = [];
 
   const messages = body.messages;
+  const lastDialogIndex = messages.findLastIndex((message) => isRecord(message) && message.role !== "system" && message.role !== "developer");
   messages.forEach((rawMsg, msgIndex) => {
     if (!isRecord(rawMsg)) return;
     // Claude Code can move its environment and deferred-tool catalog into a system message.
@@ -192,7 +213,7 @@ export function parseAnthropicMessagesRequest(
       return;
     }
     const role: "user" | "assistant" = rawMsg.role === "assistant" ? "assistant" : "user";
-    const isLastMessage = msgIndex === messages.length - 1;
+    const isLastMessage = msgIndex === lastDialogIndex;
 
     if (typeof rawMsg.content === "string") {
       items.push({

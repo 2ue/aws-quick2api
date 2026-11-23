@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { uploadImageAttachment } from "../src/aws-quick/attachment-upload.js";
 import { toolContract } from "../src/core/tool-contract.js";
-import { buildToolBridgePrompt } from "../src/core/tool-bridge.js";
+import { buildClientToolReminder, buildToolBridgePrompt } from "../src/core/tool-bridge.js";
 import { parseAnthropicMessagesRequest } from "../src/protocols/anthropic.js";
 
 describe("Native attachment delivery", () => {
@@ -113,5 +113,29 @@ describe("Claude Code deferred MCP tools", () => {
     assert.match(prompt, /first invoke ToolSearch/);
     assert.match(prompt, /max_results=5/);
     assert.match(prompt, /missing Quick connector does not mean/);
+    assert.match(buildClientToolReminder(turn.tools, "auto"), /not the Quick cloud workspace/);
+    assert.equal(buildClientToolReminder(turn.tools, "none"), "");
+  });
+
+  it("loads deferred schemas referenced by ToolSearch and preserves the result across system metadata", () => {
+    const body = {
+      model: "claude-sonnet-5-5", max_tokens: 1000,
+      messages: [
+        { role: "user", content: "Look up record 42." },
+        { role: "assistant", content: [{ type: "tool_use", id: "search", name: "ToolSearch", input: { query: "select:mcp__demo__lookup" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "search", content: [{ type: "tool_reference", tool_name: "mcp__demo__lookup" }] }, { type: "text", text: "Tool loaded." }] },
+        { role: "system", content: "Remaining budget: 1000." },
+      ],
+      tools: [
+        { name: "ToolSearch", input_schema: { type: "object" } },
+        { name: "mcp__demo__lookup", defer_loading: true, input_schema: { type: "object", properties: { id: { type: "string" } } } },
+      ],
+    };
+    const turn = parseAnthropicMessagesRequest(body);
+    assert.deepEqual(turn.tools.map((tool) => tool.name), ["ToolSearch", "mcp__demo__lookup"]);
+    assert.match(turn.fullTranscriptText, /CLIENT_TOOL_LOADED.*mcp__demo__lookup/);
+    assert.equal(turn.trailingToolResults[0].toolCallId, "search");
+    assert.equal(turn.trailingUserText, "Tool loaded.");
+    assert.throws(() => parseAnthropicMessagesRequest({ ...body, tools: body.tools.slice(0, 1) }), /missing its schema/);
   });
 });

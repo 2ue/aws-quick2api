@@ -116,6 +116,17 @@ export function buildToolBridgePrompt(
   ].join("\n");
 }
 
+export function buildClientToolReminder(tools: readonly NormalizedTool[], choice: ToolChoiceMode): string {
+  if (!tools.length || choice === "none") return "";
+  return [
+    "[External client runner]",
+    "The user's workspace and MCP servers belong to the external client, not the Quick cloud workspace. Use the client actions declared in the custom instructions for this task. Quick's files, sandbox, or connector inventory cannot establish whether the client's files or MCP servers exist.",
+    `Callable client actions: ${tools.map((tool) => tool.name).join(", ")}.`,
+    ...(tools.some((tool) => tool.name === "ToolSearch") ? ["Use ToolSearch to load deferred client tools before invoking them."] : []),
+    'Invoke through <tool_call>{"name":"<declared_action>","arguments":{...}}</tool_call> and stop for the real result. Do the requested actions rather than giving instructions; never invent a result.',
+  ].join("\n");
+}
+
 /**
  * Parse `<tool_call>{...}</tool_call>` blocks from model output text.
  */
