@@ -364,26 +364,6 @@ export const anthropicMessagesAdapter: ProtocolAdapter = {
     // Pull the first upstream event BEFORE yielding `message_start` so pre-stream
     // 401/403/429/502 errors surface as real HTTP statuses instead of HTTP 200 SSE.
     const iter = events[Symbol.asyncIterator]();
-    let step = await iter.next();
-
-    yield sse("message_start", {
-      type: "message_start",
-      message: {
-        id,
-        type: "message",
-        role: "assistant",
-        model: turn.requestedModel,
-        content: [],
-        stop_reason: null,
-        stop_sequence: null,
-        usage: {
-          input_tokens: turn.estimatedInputTokens,
-          output_tokens: 0,
-          cache_creation_input_tokens: 0,
-          cache_read_input_tokens: 0
-        }
-      }
-    });
 
     let blockIndex = -1;
     let openBlockKind: "thinking" | "text" | null = null;
@@ -411,6 +391,27 @@ export const anthropicMessagesAdapter: ProtocolAdapter = {
     };
 
     try {
+      let step = await iter.next();
+
+      yield sse("message_start", {
+        type: "message_start",
+        message: {
+          id,
+          type: "message",
+          role: "assistant",
+          model: turn.requestedModel,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: {
+            input_tokens: turn.estimatedInputTokens,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0
+          }
+        }
+      });
+
       let emittedDone = false;
       while (!step.done) {
         const ev = step.value;

@@ -35,6 +35,7 @@ import {
   parseChatCompletionsRequest,
   parseResponsesRequest,
 } from "../src/protocols/openai.js";
+import { anthropicMessagesAdapter } from "../src/protocols/anthropic.js";
 import { AWS_QUICK_MODELS, formatOpenAiModelList, resolveModelSelection } from "../src/services/model-catalog.js";
 import { ClientGatewayKeyManager } from "../src/services/client-keys.js";
 import { checkLatestVersion } from "../src/services/update-checker.js";
@@ -681,5 +682,34 @@ describe("Credential parser & ClientKeyStore", () => {
     assert.equal(chatTurn.trailingToolResults.length, 1);
     assert.equal(chatTurn.trailingToolResults[0]!.toolCallId, "call_1");
     assert.ok(chatTurn.fullTranscriptText.includes("[TOOL_RESULT name=read_file id=call_1]:"));
+
+    // 4. Early SSE cancellation right after first frame MUST finalize inner upstream generator (no zombie running traces)
+    let respFinalized = false;
+    async function* fakeRespEvents() {
+      try {
+        yield { type: "done" as const, stopReason: "stop" as const };
+      } finally {
+        respFinalized = true;
+      }
+    }
+    const respStream = openAiResponsesAdapter.streamSse(fakeRespEvents(), codexTurn);
+    const firstResp = await respStream.next();
+    assert.equal(firstResp.done, false);
+    await respStream.return(undefined);
+    assert.equal(respFinalized, true);
+
+    let anthFinalized = false;
+    async function* fakeAnthEvents() {
+      try {
+        yield { type: "done" as const, stopReason: "stop" as const };
+      } finally {
+        anthFinalized = true;
+      }
+    }
+    const anthStream = anthropicMessagesAdapter.streamSse(fakeAnthEvents(), codexTurn);
+    const firstAnth = await anthStream.next();
+    assert.equal(firstAnth.done, false);
+    await anthStream.return(undefined);
+    assert.equal(anthFinalized, true);
   });
 });

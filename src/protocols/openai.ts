@@ -784,11 +784,6 @@ export const openAiResponsesAdapter: ProtocolAdapter = {
     // Pull the first upstream event BEFORE yielding `response.created` so pre-stream
     // 401/403/429/502 errors surface as real HTTP statuses instead of HTTP 200 SSE.
     const iter = events[Symbol.asyncIterator]();
-    let step = await iter.next();
-
-    yield sse("response.created", { response: baseResponse("in_progress", []) });
-    yield sse("response.in_progress", { response: baseResponse("in_progress", []) });
-
     // Items are opened lazily and closed on every kind transition (reasoning <-> message <-> tool calls),
     // so a model that interleaves them still yields a spec-shaped stream.
     const output: Array<Record<string, unknown>> = [];
@@ -844,6 +839,11 @@ export const openAiResponsesAdapter: ProtocolAdapter = {
     };
 
     try {
+      let step = await iter.next();
+
+      yield sse("response.created", { response: baseResponse("in_progress", []) });
+      yield sse("response.in_progress", { response: baseResponse("in_progress", []) });
+
       while (!step.done) {
         const ev = step.value;
         if (ev.type === "thinking") {
