@@ -4,6 +4,7 @@ import { uploadImageAttachment } from "../src/aws-quick/attachment-upload.js";
 import { toolContract } from "../src/core/tool-contract.js";
 import { buildClientToolReminder, buildToolBridgePrompt } from "../src/core/tool-bridge.js";
 import { parseAnthropicMessagesRequest } from "../src/protocols/anthropic.js";
+import { workingSessionIdForThread } from "../src/core/engine.js";
 
 describe("Native attachment delivery", () => {
   it("uploads original bytes, checks verdict, and delivers a path reference", async () => {
@@ -137,5 +138,16 @@ describe("Claude Code deferred MCP tools", () => {
     assert.equal(turn.trailingToolResults[0].toolCallId, "search");
     assert.equal(turn.trailingUserText, "Tool loaded.");
     assert.throws(() => parseAnthropicMessagesRequest({ ...body, tools: body.tools.slice(0, 1) }), /missing its schema/);
+  });
+});
+
+describe("Upstream connection isolation", () => {
+  it("gives separate threads on the same account separate working sessions, retaining warm continuity", () => {
+    const first = workingSessionIdForThread("client-a", "account", "thread-a");
+    assert.match(first, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(first, workingSessionIdForThread("client-a", "account", "thread-a"));
+    assert.notEqual(first, workingSessionIdForThread("client-a", "account", "thread-b"));
+    assert.notEqual(first, workingSessionIdForThread("client-b", "account", "thread-a"));
+    assert.notEqual(first, workingSessionIdForThread("client-a", "other-account", "thread-a"));
   });
 });

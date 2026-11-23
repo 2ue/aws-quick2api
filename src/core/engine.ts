@@ -481,6 +481,11 @@ export function splitPromptIntoSafeChunks(
 const WARM_THREAD_TTL_MS = 30 * 60 * 1000;
 const MAX_WARM_THREADS = 256;
 
+export function workingSessionIdForThread(scope: string | undefined, slotId: string, threadId: string): string {
+  const hash = crypto.createHash("sha256").update(JSON.stringify([scope || "default", slotId, threadId])).digest("hex");
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-${((parseInt(hash[16]!, 16) & 3) | 8).toString(16)}${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+}
+
 export class QuickExecutionEngine {
   private readonly config: GatewayConfig;
   private readonly usageTracker: UsageTracker;
@@ -491,7 +496,6 @@ export class QuickExecutionEngine {
   private readonly suppressLateRoutedThinkingInStream: boolean;
   private readonly webSearchEnabled: boolean;
   private readonly sanitizeAwsUiTags: boolean;
-  private readonly workingSessionIds = new Map<string, string>();
   private readonly warmThreads = new Map<string, { threadId: string; expiresAt: number }>();
   private readonly overflowSummaryCache = new Map<string, { summary: string; expiresAt: number }>();
 
@@ -911,12 +915,8 @@ export class QuickExecutionEngine {
     const appVersion = isWeb ? "qbiz-web-bridge" : APP_VERSION;
     const surfaceName = isWeb ? "web" : "desktop";
 
-    let workingSessionId = this.workingSessionIds.get(lease.slotId);
-    if (!workingSessionId) {
-      workingSessionId = crypto.randomUUID();
-      this.workingSessionIds.set(lease.slotId, workingSessionId);
-    }
     const threadId = warmThreadId || crypto.randomUUID();
+    const workingSessionId = workingSessionIdForThread(turn.scope, lease.slotId, threadId);
 
     if (useNativeImages && credential.oauth && imageInputs.length) {
       const { accessToken } = await resolveOAuthAccessToken(credential.oauth, false, lease.proxyUrl);
