@@ -1,5 +1,5 @@
 import { BUILTIN_MODEL_CONFIG, type ModelDefinition } from "./model-config.js";
-import type { ModelSelection, QuickThinkingEffort, SDKModel } from "../aws-quick/types.js";
+import type { ModelSelection, QuickAgentMode, QuickThinkingEffort, SDKModel } from "../aws-quick/types.js";
 import { GatewayError } from "../core/types.js";
 
 export interface ModelRoute {
