@@ -182,6 +182,7 @@ export function loadConfigFromEnv(
     gatewayTokens,
     adminPassword,
     enableDashboard,
+    showThinkingContent: parseBoolEnv(env.SHOW_THINKING_CONTENT, false),
     dashboardPath,
     quickTokens,
     disabledQuickTokens,
@@ -324,6 +325,21 @@ export function persistAdminPasswordToEnvFile(envFilePath: string | undefined, n
     return line;
   });
   if (!found) lines.push(`ADMIN_PASSWORD=${newPassword}`);
+  writeEnvFileAtomic(envFilePath, lines.join("\n").trimEnd() + "\n");
+}
+
+export function persistThinkingDisplayToEnvFile(envFilePath: string | undefined, enabled: boolean): void {
+  if (!envFilePath || !existsSync(envFilePath)) return;
+  const content = readFileSync(envFilePath, "utf8");
+  let found = false;
+  const lines = content.split(/\r?\n/).map((line) => {
+    if (/^\s*SHOW_THINKING_CONTENT\s*=/.test(line)) {
+      found = true;
+      return `SHOW_THINKING_CONTENT=${enabled}`;
+    }
+    return line;
+  });
+  if (!found) lines.push(`SHOW_THINKING_CONTENT=${enabled}`);
   writeEnvFileAtomic(envFilePath, lines.join("\n").trimEnd() + "\n");
 }
 

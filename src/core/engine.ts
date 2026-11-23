@@ -563,7 +563,7 @@ export class QuickExecutionEngine {
     this.modelListFetcher = options.modelListFetcher;
     this.incognito = process.env.INCOGNITO !== "false";
     this.autoDeleteSession = process.env.AUTO_DELETE_SESSION === "true";
-    this.showRoutedModelInThinking = process.env.SHOW_ROUTED_MODEL_IN_THINKING !== "false";
+    this.showRoutedModelInThinking = process.env.SHOW_ROUTED_MODEL_IN_THINKING === "true";
     this.suppressLateRoutedThinkingInStream =
       process.env.SUPPRESS_LATE_ROUTED_THINKING_IN_STREAM === "true";
     this.webSearchEnabled = process.env.WEB_SEARCH_ENABLED !== "false";
@@ -1247,6 +1247,8 @@ export class QuickExecutionEngine {
           const outputTokens = Number(payload.output_tokens || 0);
           const cacheReadTokens = Number(payload.cache_read_tokens || 0);
           const cacheWriteTokens = Number(payload.cache_write_tokens || 0);
+          const reportedReasoning = payload.reasoning_tokens ?? payload.thinking_tokens;
+          const reasoningTokens = typeof reportedReasoning === "number" && Number.isFinite(reportedReasoning) && reportedReasoning >= 0 ? reportedReasoning : undefined;
           const served = String(payload.resolved_model_id || payload.served_model_id || "");
           if (served) {
             resolvedModelId = served;
@@ -1262,7 +1264,7 @@ export class QuickExecutionEngine {
             apiKey: lease.apiKey,
             modelId: resolvedModelId ? `${selection.model} (${resolvedModelId})` : selection.model,
             mode: execMode,
-            metrics: { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens },
+            metrics: { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, ...(reasoningTokens !== undefined ? { reasoningTokens } : {}) },
           });
           push({
             type: "usage",
@@ -1271,6 +1273,7 @@ export class QuickExecutionEngine {
               outputTokens,
               cacheReadTokens,
               cacheWriteTokens,
+              ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
               ...(resolvedModelId ? { resolvedModel: resolvedModelId } : {}),
               ...(isIncognito && this.autoDeleteSession ? { sessionDeleted: true } : {}),
             },

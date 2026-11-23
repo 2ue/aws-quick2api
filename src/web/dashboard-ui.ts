@@ -1143,6 +1143,11 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
             <div class="setting-row"><div class="setting-info"><h3>请求队列</h3><p id="admissionStats">正在读取</p></div></div>
 
             <div class="setting-row">
+              <div class="setting-info"><h3>显示思考内容</h3><p>默认关闭。只控制是否向客户端返回上游思考内容，不影响思考模式与强度。</p></div>
+              <label class="switch"><input type="checkbox" id="cfgShowThinkingContent" /><span class="slider"></span></label>
+            </div>
+
+            <div class="setting-row">
               <div class="setting-info">
                 <h3>会话粘性亲和 (Sticky Session Affinity)</h3>
                 <p>开启后，同一对话窗口在有效期内始终锁定同一健康账号执行，防止跨号跳跃；若原账号耗尽或限流则自动漂移至健康账号。</p>
@@ -2514,6 +2519,7 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
 
       if (settings.lbStrategy) { $("cfgLbStrategy").value = settings.lbStrategy; syncSelectUi($("cfgLbStrategy")); }
       $("cfgAccountMaxConcurrent").value = settings.accountMaxConcurrent || 2;
+      $("cfgShowThinkingContent").checked = settings.showThinkingContent === true;
       const admission = (data.runtime || {}).admission;
       $("admissionStats").textContent = admission ? tr("活跃 / 上限：", "Active / limit: ") + admission.active + " / " + admission.maxConcurrent + tr("；排队 / 上限：", "; queued / limit: ") + admission.queued + " / " + admission.maxQueued : "—";
       $("cfgAffinityEnabled").checked = settings.sessionAffinityEnabled !== false;
@@ -4171,6 +4177,7 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
           body: JSON.stringify({
             lbStrategy: $("cfgLbStrategy").value,
             accountMaxConcurrent: Number($("cfgAccountMaxConcurrent").value),
+            showThinkingContent: $("cfgShowThinkingContent").checked,
             sessionAffinityEnabled: $("cfgAffinityEnabled").checked,
             sessionAffinityTtlSeconds: Number($("cfgAffinityTtl").value) || 3600,
             autoDisableExhaustedKeys: $("cfgAutoDisable").checked,

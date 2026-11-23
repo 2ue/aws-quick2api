@@ -17,7 +17,7 @@
 
 ## In Progress
 
-暂无。
+- 补齐 ultrathink 关键词、thinking.enabled 等思考入口，区分真实思考事件与路由信息；候选通过后合并发布工具及思考修复。
 
 ## Next
 

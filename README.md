@@ -172,7 +172,8 @@ docker compose pull && docker compose up -d
 | `INCOGNITO` | `true` | 原生无痕模式，不落云端历史（管理台支持热切换） |
 | `AUTO_DELETE_SESSION` | `false` | 无痕模式下回合结束后是否额外发 `session_delete`（默认关闭） |
 | `WEB_SEARCH_ENABLED` | `true` | 开启 AWS Quick 原生联网搜索 |
-| `SHOW_ROUTED_MODEL_IN_THINKING` | `true` | 在思考块中显示实际路由模型 |
+| `SHOW_ROUTED_MODEL_IN_THINKING` | `false` | 调试时把路由信息放入思考块；该信息不是上游思考内容 |
+| `SHOW_THINKING_CONTENT` | `false` | 是否向客户端显示上游思考内容；管理台可切换，不影响思考强度 |
 | `SUPPRESS_LATE_ROUTED_THINKING_IN_STREAM` | `false` | 仅当老旧 OpenAI 客户端无法兼容正文后的 `reasoning_content` 时设为 `true` |
 | `SANITIZE_AWS_UI_TAGS` | `true` | 将 AWS Quick 私有 `<decision>`/`<artifact>` 标签转为 Markdown（保留代码块原样） |
 | `AWS_QUICK_LOCALE` | `en-US` | 上行区域语言 |

@@ -123,6 +123,7 @@ export interface GatewayConfig {
   adminPassword?: string;
   /** Mount the optional Web Console & `/v1/admin/*` management API (default `true`; set `false` for pure headless proxy). */
   enableDashboard: boolean;
+  showThinkingContent?: boolean;
   /** Custom URL path for the management console (default `/dashboard`, e.g. `/adm-7f3c9a`). */
   dashboardPath: string;
   quickTokens: string[];

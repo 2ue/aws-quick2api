@@ -23,6 +23,11 @@ for (const definition of definitions) {
     if (definition.thinking) {
       aliases.set(`${base}${definition.thinking.suffix}`, { definition, effort: definition.thinking.defaultEffort });
       aliases.set(`${base}-thinking`, { definition, effort: "high" });
+      aliases.set(`${base}-ultrathink`, { definition, effort: "high", normalized: "ultrathink-to-high" });
+      for (const effort of ["low", "medium", "high"] as const) {
+        aliases.set(`${base}-think-${effort}`, { definition, effort });
+        aliases.set(`${base}-thinking-${effort}`, { definition, effort });
+      }
     }
     aliases.set(`${base}-max`, { definition, effort: "high", normalized: "max-to-high" });
     aliases.set(`${base}-xhigh`, { definition, effort: "high", normalized: "xhigh-to-high" });
@@ -51,11 +56,28 @@ function parseEffort(raw: unknown, field: string, normalizations: string[]): Qui
     case "low": case "minimal": return "low";
     case "medium": case "mid": return "medium";
     case "high": return "high";
-    case "max": case "xhigh":
+    case "max": case "xhigh": case "ultrathink":
       normalizations.push(`${field}:${raw.trim().toLowerCase()}-to-high`);
       return "high";
     default: throw new GatewayError(`Unsupported ${field}; use off, low, medium or high.`, 400, "invalid_reasoning_effort", field);
   }
+}
+
+function latestUserText(body: Record<string, unknown>): string {
+  if (typeof body.input === "string") return body.input;
+  const messages = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : [];
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = record(messages[index]);
+    if (!message || message.role !== "user") continue;
+    if (typeof message.content === "string" && message.content.trim()) return message.content;
+    if (!Array.isArray(message.content)) continue;
+    const text = message.content.flatMap((block) => {
+      const value = record(block);
+      return value && (value.type === "text" || value.type === "input_text") && typeof value.text === "string" ? [value.text] : [];
+    }).join("\n");
+    if (text.trim()) return text;
+  }
+  return "";
 }
 
 export function resolveModelRoute(requestedModel: string | undefined, body: Record<string, unknown> = {}, allowAdvanced = false): ModelRoute {
@@ -79,9 +101,15 @@ export function resolveModelRoute(requestedModel: string | undefined, body: Reco
   const reasoning = record(body.reasoning);
   const outputConfig = record(body.output_config);
   const thinking = record(body.thinking);
+  if (thinking?.type !== undefined && !["enabled", "adaptive", "disabled"].includes(String(thinking.type))) {
+    throw new GatewayError("thinking.type must be enabled, adaptive or disabled.", 400, "invalid_reasoning_effort", "thinking.type");
+  }
+  for (const [field, value] of [["thinking.enabled", thinking?.enabled], ["enable_thinking", body.enable_thinking]] as const) {
+    if (value !== undefined && typeof value !== "boolean") throw new GatewayError(`${field} must be a boolean.`, 400, "invalid_reasoning_effort", field);
+  }
   const fields: Array<[string, unknown]> = [
     ["reasoning_effort", body.reasoning_effort], ["thinking_effort", body.thinking_effort],
-    ["effort", body.effort], ["reasoning.effort", reasoning?.effort], ["output_config.effort", outputConfig?.effort],
+    ["effort", body.effort], ["reasoning.effort", reasoning?.effort], ["output_config.effort", outputConfig?.effort], ["thinking.effort", thinking?.effort],
   ];
   const explicit = fields.filter(([, value]) => value !== undefined).map(([key, value]) => parseEffort(value, key, normalizations));
   if (thinking?.budget_tokens !== undefined && thinking.type !== "disabled") {
@@ -93,13 +121,17 @@ export function resolveModelRoute(requestedModel: string | undefined, body: Reco
   }
   if (new Set(explicit).size > 1) throw new GatewayError("Conflicting reasoning effort parameters.", 400, "conflicting_reasoning_effort");
   if (explicit.length) effort = explicit[0]!;
-  const disabled = thinking?.type === "disabled" || body.enable_thinking === false;
-  const enabled = thinking?.type === "enabled" || thinking?.type === "adaptive" || body.enable_thinking === true;
+  const disabled = body.thinking === false || thinking?.type === "disabled" || thinking?.enabled === false || body.enable_thinking === false;
+  const enabled = body.thinking === true || thinking?.type === "enabled" || thinking?.type === "adaptive" || thinking?.enabled === true || body.enable_thinking === true;
   if (disabled && enabled || disabled && explicit.length && effort !== "off" || enabled && explicit.length && effort === "off") {
     throw new GatewayError("Thinking enablement conflicts with reasoning effort.", 400, "conflicting_reasoning_effort");
   }
   if (disabled) effort = "off";
   else if (enabled && !explicit.length) effort = "high";
+  if (!disabled && !explicit.length && !bracket && /\bultrathink\b/i.test(latestUserText(body))) {
+    effort = "high";
+    normalizations.push("ultrathink:high");
+  }
   if (found.definition.mode === "fast" && effort !== "off") {
     normalizations.push("fast:thinking-off");
     effort = "off";

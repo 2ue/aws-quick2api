@@ -21,6 +21,36 @@ function pool(count = 20, extra = {}) {
 }
 
 describe("Unified model routing", () => {
+  it("maps Claude Code thinking aliases, effort levels and enablement forms", () => {
+    for (const model of ["claude-sonnet-5-5-think", "claude-sonnet-5-5-thinking", "claude-opus-5-5-ultrathink"]) {
+      assert.equal(resolveModelRoute(model).thinkingEffort, "high");
+    }
+    assert.equal(resolveModelRoute("claude-sonnet-5-5-thinking-low").thinkingEffort, "low");
+    for (const body of [{ thinking: true }, { thinking: { enabled: true } }, { thinking: { type: "adaptive" } },
+      { enable_thinking: true }, { output_config: { effort: "xhigh" } }, { reasoning: { effort: "max" } },
+      { thinking: { effort: "ultrathink" } }]) {
+      assert.equal(resolveModelRoute("claude-sonnet-5-5", body).thinkingEffort, "high");
+    }
+    assert.equal(resolveModelRoute("claude-sonnet-5-5", { thinking: { type: "enabled", budget_tokens: 4096 } }).thinkingEffort, "medium");
+    assert.equal(resolveModelRoute("claude-sonnet-5-5-think", { thinking: false }).thinkingEffort, "off");
+    assert.throws(() => resolveModelRoute("claude-sonnet-5-5", { thinking: { enabled: "true" } }), /boolean/);
+    assert.throws(() => resolveModelRoute("claude-sonnet-5-5", { thinking: { type: "mystery" } }), /thinking.type/);
+  });
+
+  it("recognizes ultrathink in the current user request without reading tool outputs or system instructions", () => {
+    for (const body of [{ input: "ultrathink solve this" }, { input: [{ role: "user", content: [{ type: "input_text", text: "ultrathink solve this" }] }] },
+      { messages: [{ role: "user", content: "ultrathink solve this" }, { role: "assistant", content: "Calling tool" }, { role: "user", content: [{ type: "tool_result", content: "result" }] }] }]) {
+      const route = resolveModelRoute("claude-sonnet-5-5", body);
+      assert.equal(route.thinkingEffort, "high");
+      assert.ok(route.normalizations.includes("ultrathink:high"));
+    }
+    assert.equal(resolveModelRoute("claude-sonnet-5-5", { messages: [{ role: "system", content: "ultrathink" }, { role: "user", content: "hello" }] }).thinkingEffort, "off");
+    assert.equal(resolveModelRoute("claude-sonnet-5-5", { messages: [{ role: "user", content: "ultrathink old task" }, { role: "assistant", content: "done" }, { role: "user", content: "new task" }] }).thinkingEffort, "off");
+    assert.equal(resolveModelRoute("claude-sonnet-5-5", { input: "ultrathink", thinking: { type: "disabled" } }).thinkingEffort, "off");
+    assert.equal(resolveModelRoute("claude-sonnet-5-5", { input: "ultrathink", reasoning: { effort: "low" } }).thinkingEffort, "low");
+    assert.equal(resolveModelRoute("claude-haiku-5-5", { input: "ultrathink" }).thinkingEffort, "off");
+  });
+
   it("accepts explicit aliases without accepting unknown versions", () => {
     for (const [model, mode] of [["claude-haiku-5-5", "fast"], ["claude-sonnet-5.5", "balanced"], ["us.anthropic.claude-opus-5-5", "smart"]]) {
       assert.equal(resolveModelRoute(model).agentMode, mode);
@@ -178,6 +208,45 @@ describe("20-account scheduling", () => {
 });
 
 describe("HTTP protocol routing contracts", () => {
+  it("toggles thinking visibility for JSON and SSE in every protocol without changing upstream effort", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "quick-thinking-"));
+    const envPath = path.join(dir, ".env");
+    writeFileSync(envPath, "GATEWAY_TOKEN=test-key\nSHOW_THINKING_CONTENT=false\n");
+    const config = loadConfigFromEnv({ GATEWAY_TOKEN: "test-key", ADMIN_PASSWORD: "test-admin", QUICK_TOKENS: "test-account", DATA_DIR: dir });
+    config.envFilePath = envPath;
+    const seen: ParsedProtocolTurn[] = [];
+    const instance = createGatewayServer({ config, turnExecutor: async function* (turn) {
+      seen.push(turn);
+      yield { type: "thinking", text: "TEST_UPSTREAM_THINKING" };
+      yield { type: "text", text: "PONG" };
+      yield { type: "done", stopReason: "stop" };
+    } });
+    await new Promise<void>((resolve) => instance.server.listen(0, "127.0.0.1", resolve));
+    const base = `http://127.0.0.1:${(instance.server.address() as { port: number }).port}`;
+    try {
+      for (const visible of [false, true, false]) {
+        const setting = await fetch(base+"/v1/admin/settings", { method: "POST", headers: { Authorization: "Bearer test-admin", "Content-Type": "application/json" }, body: JSON.stringify({ showThinkingContent: visible }) });
+        assert.equal(setting.status, 200);
+        assert.match(readFileSync(envPath, "utf8"), new RegExp(`SHOW_THINKING_CONTENT=${visible}`));
+        for (const [route, payload] of [["messages", { max_tokens: 100, messages: [{ role: "user", content: "hello" }] }],
+          ["chat/completions", { messages: [{ role: "user", content: "hello" }] }], ["responses", { input: "hello" }]] as const) {
+          for (const stream of [false, true]) {
+            const response = await fetch(`${base}/v1/${route}`, { method: "POST", headers: { Authorization: "Bearer test-key", "Content-Type": "application/json" }, body: JSON.stringify({ model: "claude-sonnet-5-5-thinking", ...payload, stream }) });
+            assert.equal(response.status, 200);
+            assert.equal(response.headers.get("x-quick-thinking-effort"), "high");
+            assert.equal(response.headers.get("x-quick-thinking-visible"), String(visible));
+            const text = await response.text();
+            assert.equal(text.includes("TEST_UPSTREAM_THINKING"), visible);
+            assert.ok(text.includes("PONG"));
+            assert.equal(seen.at(-1)!.modelRoute!.thinkingEffort, "high");
+          }
+        }
+      }
+      const usage = await fetch(base+"/v1/usage", { headers: { Authorization: "Bearer test-admin" } });
+      assert.equal(((await usage.json()) as { settings: { showThinkingContent: boolean } }).settings.showThinkingContent, false);
+    } finally { await instance.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("routes all three protocols, preserves aliases and emits matching SSE", async () => {
     const seen: ParsedProtocolTurn[] = [];
     const instance = createGatewayServer({ config: loadConfigFromEnv({ GATEWAY_TOKEN: "test-key", ENABLE_DASHBOARD: "false", QUICK_TOKENS: "test-account" }),

@@ -16,6 +16,27 @@
 
 思考参数支持 Chat 的 `reasoning_effort`、Responses 的 `reasoning.effort`、Messages 的 `output_config.effort` 和 `thinking`。显式参数优先于模型别名默认值；多个显式参数冲突返回 400。Fast 归为 off，max/xhigh 归为 high。响应头 `X-Quick-Agent-Mode`、`X-Quick-Thinking-Effort`、`X-Quick-Normalized` 展示最终配置。模型权限按规范型号检查，别名不能绕过限制。
 
+## Claude Code 思考控制与显示
+
+思考是否启用与思考内容是否显示独立控制。`SHOW_THINKING_CONTENT=false` 是默认值，只过滤返回客户端的思考事件，不改变发送给 Quick 的 `thinking_effort`。管理台「路由配置 → 显示思考内容」可以立即切换并持久化；也可以管理员调用 `POST /v1/admin/settings`，请求体为 `{"showThinkingContent":true}` 或 `false`。
+
+| 输入方式 | 选用的思考强度 |
+| --- | --- |
+| Sonnet / Opus 的 `-think`、`-thinking` 后缀 | 默认 high |
+| `-think-low` / `-thinking-medium` / `-thinking-high` | 对应 low / medium / high |
+| Claude Code `--effort low/medium/high` | 按请求中的 `output_config.effort` 选择 |
+| Claude Code `--effort xhigh/max` | 归一化到 Quick 的 high |
+| 当前用户请求含独立单词 `ultrathink` | 没有显式 effort 或关闭参数时选 high |
+| `thinking.type=enabled/adaptive`、`thinking.enabled=true`、`enable_thinking=true`、`thinking=true` | 未给 effort 时选 high |
+| `thinking.budget_tokens` | 小于 2048 为 low；2048 到 8191 为 medium；不小于 8192 为 high，属于近似映射 |
+| `thinking=false`、`thinking.type=disabled`、`thinking.enabled=false` | 关闭思考；与显式非 off effort 冲突时返回 400 |
+
+Chat 的 `reasoning_effort`、Responses 的 `reasoning.effort`、`thinking_effort`、`thinking.effort`、`effort` 也共用解析。显式请求参数优先于关键词和后缀；系统提示、工具结果和旧用户回合中的 ultrathink 不会替代最新用户请求。
+
+Haiku / fast 当前归一化为 off；本次未声明其支持思考。Quick 只有 off/low/medium/high，不能原生执行 max/xhigh。响应头 `X-Quick-Thinking-Visible` 表示显示开关，`X-Quick-Thinking-Effort` 表示实际选用并发送的强度。
+
+上游有时不返回思考文本，是否返回文本不能单独证明是否执行思考。开启显示只转发真实上游事件，不补造内容。`SHOW_ROUTED_MODEL_IN_THINKING=false` 默认关闭旧的路由说明；路由信息不作为思考执行证据。未报告独立 reasoning token 数时不估算该数值。
+
 ## 20 个账号的起始配置
 
 ```dotenv

@@ -1,4 +1,5 @@
 import type { RequestAdmission } from "../core/request-admission.js";
+import { persistThinkingDisplayToEnvFile } from "../core/config.js";
 import crypto from "node:crypto";
 import type http from "node:http";
 import {
@@ -199,7 +200,7 @@ export async function tryHandleWebAdminRoute(
     sendJson(res, 200, {
       object: "gateway.usage",
       ...usageTracker.snapshot(),
-      settings: keyPool.getSettings(),
+      settings: { ...keyPool.getSettings(), showThinkingContent: config.showThinkingContent === true },
       runtime: { ...engine.runtimeStats(), admission: ctx.admission?.snapshot() },
       keyPool: keyPool.statusSnapshot(),
       affinities: keyPool.affinitySnapshot()
@@ -225,7 +226,7 @@ export async function tryHandleWebAdminRoute(
     sendJson(res, 200, {
       object: "aws_quick.quota",
       accounts,
-      settings: keyPool.getSettings(),
+      settings: { ...keyPool.getSettings(), showThinkingContent: config.showThinkingContent === true },
       runtime: { ...engine.runtimeStats(), admission: ctx.admission?.snapshot() },
       keyPool: keyPool.statusSnapshot(),
       affinities: keyPool.affinitySnapshot(),
@@ -257,8 +258,15 @@ export async function tryHandleWebAdminRoute(
       patch.incognitoMode = body.incognitoMode;
       config.incognitoMode = body.incognitoMode;
     }
+    if (body.showThinkingContent !== undefined && typeof body.showThinkingContent !== "boolean") {
+      throw new GatewayError("showThinkingContent must be a boolean.", 400, "invalid_request_error");
+    }
     keyPool.updateSettings(patch);
-    sendJson(res, 200, { ok: true, settings: keyPool.getSettings() });
+    if (typeof body.showThinkingContent === "boolean") {
+      persistThinkingDisplayToEnvFile(config.envFilePath, body.showThinkingContent);
+      config.showThinkingContent = body.showThinkingContent;
+    }
+    sendJson(res, 200, { ok: true, settings: { ...keyPool.getSettings(), showThinkingContent: config.showThinkingContent === true } });
     return true;
   }
 

@@ -367,8 +367,11 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     traceId: string | null,
     clientKeyId?: string
   ): AsyncGenerator<GatewayStreamEvent, void, unknown> {
+    const showThinking = config.showThinkingContent === true;
     if (!traceId && !clientKeyId) {
-      yield* events;
+      for await (const event of events) {
+        if (event.type !== "thinking" || showThinking) yield event;
+      }
       return;
     }
     let doneReason: string | undefined;
@@ -382,7 +385,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
           traceLogger.recordUsage(traceId, ev.metrics);
           clientKeys.recordUsage(clientKeyId, ev.metrics.inputTokens + ev.metrics.cacheReadTokens, ev.metrics.outputTokens);
         } else if (ev.type === "done") doneReason = ev.stopReason;
-        yield ev;
+        if (ev.type !== "thinking" || showThinking) yield ev;
       }
       settled = true;
       traceLogger.finishSuccess(traceId, doneReason);
@@ -698,7 +701,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
             traceLogger.finishError(traceId, gwErr.status, gwErr.message);
             throw gwErr;
           }
-          const routeHeaders = { "X-Quick-Agent-Mode": turn.modelRoute.agentMode, "X-Quick-Thinking-Effort": turn.modelRoute.thinkingEffort, ...(turn.modelRoute.normalizations.length ? { "X-Quick-Normalized": turn.modelRoute.normalizations.join(", ") } : {}) };
+          const routeHeaders = { "X-Quick-Agent-Mode": turn.modelRoute.agentMode, "X-Quick-Thinking-Effort": turn.modelRoute.thinkingEffort, "X-Quick-Thinking-Visible": String(config.showThinkingContent === true), ...(turn.modelRoute.normalizations.length ? { "X-Quick-Normalized": turn.modelRoute.normalizations.join(", ") } : {}) };
           const ledgerMeta = { account: "", execMode: "", usedProxy: false, startedAt: Date.now() };
           const rawEvents = options.turnExecutor ? options.turnExecutor(turn, keyPool) : engine.executeTurnWithPool(turn, keyPool, (meta) => {
             traceLogger.bindExecutionMeta(traceId, meta);
