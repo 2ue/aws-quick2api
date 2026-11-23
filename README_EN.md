@@ -2,6 +2,11 @@
 
 English | **[简体中文](./README.md)**
 
+[![Release](https://img.shields.io/github/v/release/kuk-888/aws-quick2api?display_name=tag&sort=semver&style=flat-square)](https://github.com/kuk-888/aws-quick2api/releases)
+[![GHCR](https://img.shields.io/badge/GHCR-aws--quick2api-2496ED?logo=docker&logoColor=white&style=flat-square)](https://github.com/kuk-888/aws-quick2api/pkgs/container/aws-quick2api)
+[![Community: LINUX DO](https://img.shields.io/badge/Community-LINUX%20DO-1f2937?style=flat-square)](https://linux.do)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
+
 Single-process **OpenAI & Anthropic API gateway** for **AWS Quick**. Runs on Linux, Docker, macOS, and Windows without installing the official desktop app, and ships with a built-in Web Console (`aws-quick-admin`).
 
 > **Disclaimer**: Independent third-party open-source project, not affiliated with or endorsed by Amazon Web Services (AWS). Contains no proprietary AWS binaries or assets. Authenticate with your own legitimate account. For personal development and protocol interoperability only—do not resell or run as a commercial relay.
@@ -160,6 +165,14 @@ See [.env.example](./.env.example) for the full template:
 - **`response_format` (`json_object` / `json_schema`) & `n > 1`**: Not supported; returns an explicit `400` error.
 - **Attachments**: Image inputs (PNG/JPG/WebP/GIF) are supported. Because AWS Quick enforces a 50 KB single-frame WebSocket limit, oversized images are automatically downscaled and JPEG-compressed (`sharp`) to fit; for dense small-font tables or code screenshots, cropping to the target area yields sharper OCR. PDF, document, and audio attachments are not supported yet.
 - **Non-chat endpoints**: Embeddings, image generation, TTS, and Whisper are not supported.
+
+---
+
+## Community
+
+For bug reports and feature requests, please open an issue on [GitHub Issues](https://github.com/kuk-888/aws-quick2api/issues).
+
+Thanks to the [LINUX DO](https://linux.do) community for providing an open and friendly technical exchange platform.
 
 ---
 

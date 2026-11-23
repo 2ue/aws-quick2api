@@ -2,6 +2,11 @@
 
 简体中文 | **[English](./README_EN.md)**
 
+[![Release](https://img.shields.io/github/v/release/kuk-888/aws-quick2api?display_name=tag&sort=semver&style=flat-square)](https://github.com/kuk-888/aws-quick2api/releases)
+[![GHCR](https://img.shields.io/badge/GHCR-aws--quick2api-2496ED?logo=docker&logoColor=white&style=flat-square)](https://github.com/kuk-888/aws-quick2api/pkgs/container/aws-quick2api)
+[![Community: LINUX DO](https://img.shields.io/badge/Community-LINUX%20DO-1f2937?style=flat-square)](https://linux.do)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
+
 面向 **AWS Quick** 的单进程 **OpenAI & Anthropic 双协议 API 网关**。可在 Linux、Docker、macOS、Windows 上独立运行，无需安装官方桌面端，内置轻量化 Web 管理台（`aws-quick-admin`）。
 
 > **免责声明**：本项目为独立第三方开源项目，与 Amazon Web Services (AWS) 无任何官方关联或背书。仓库不包含任何 AWS 闭源二进制或专有资产，请使用本人合法账号授权。仅限个人开发与协议互通，请勿用于商业中转或转售。
@@ -168,6 +173,14 @@ docker compose pull && docker compose up -d
 - **`response_format`（`json_object` / `json_schema`）与 `n > 1`**：暂不支持，返回明确 `400` 错误。
 - **附件**：支持常见图片（PNG/JPG/WebP/GIF）。受 AWS Quick 50 KB 单帧 WebSocket 上限约束，大图会自动通过 `sharp` 缩放并压缩为 JPEG 发送；如需精读密集小字表格或代码，建议局部截图以获得更高清晰度。暂不支持 PDF、文档和音频。
 - **非对话接口**：不支持 Embeddings、文生图、TTS 与 Whisper。
+
+---
+
+## 社区
+
+问题反馈与功能建议欢迎提交 [GitHub Issues](https://github.com/kuk-888/aws-quick2api/issues)。
+
+感谢 [LINUX DO](https://linux.do) 社区提供开放、友善的技术交流平台。
 
 ---
 
