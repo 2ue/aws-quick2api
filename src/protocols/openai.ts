@@ -108,6 +108,31 @@ export function parseOpenAiTools(rawTools: unknown): {
         },
         toolKind: "custom",
       });
+    } else if (rawType === "namespace" && typeof item.name === "string" && item.name.trim() && Array.isArray(item.tools)) {
+      // OpenAI Responses / Codex CLI namespaced tool groups (e.g. MCP servers `mcp__<server>` and `multi_agent_v1`)
+      const ns = item.name.trim();
+      for (const sub of item.tools) {
+        if (!isRecord(sub)) continue;
+        const subType = typeof sub.type === "string" ? sub.type.trim().toLowerCase() : "function";
+        const subName =
+          typeof sub.name === "string" && sub.name.trim()
+            ? sub.name.trim()
+            : isRecord(sub.function) && typeof sub.function.name === "string"
+              ? sub.function.name.trim()
+              : "";
+        if (!subName) continue;
+        const fnObj = isRecord(sub.function) ? sub.function : sub;
+        const subDesc = typeof fnObj.description === "string" && fnObj.description ? fnObj.description : undefined;
+        const subSchema = isRecord(fnObj.parameters) ? fnObj.parameters : { type: "object", properties: {} };
+        customTools.push({
+          name: `${ns}__${subName}`,
+          ...(subDesc ? { description: subDesc } : {}),
+          inputSchema: subSchema,
+          toolKind: subType === "custom" ? "custom" : "function",
+          toolNamespace: ns,
+          wireName: subName,
+        });
+      }
     } else if (rawType === "local_shell" || rawType === "shell") {
       // OpenAI Responses / Codex CLI local shell tool
       const name = typeof item.name === "string" && item.name.trim() ? item.name.trim() : rawType;
@@ -432,12 +457,14 @@ export function parseResponsesRequest(
       if (itemType === "function_call" || itemType === "custom_tool_call" || itemType === "local_shell_call") {
         trailingToolResults.length = 0;
         const callId = typeof item.call_id === "string" ? item.call_id : "";
-        const name =
+        const rawName =
           itemType === "local_shell_call"
             ? "local_shell"
             : typeof item.name === "string"
               ? item.name
               : "";
+        const ns = typeof item.namespace === "string" && item.namespace.trim() ? item.namespace.trim() : "";
+        const name = ns && rawName ? `${ns}__${rawName}` : rawName;
         const args =
           itemType === "custom_tool_call"
             ? typeof item.input === "string"
@@ -664,9 +691,16 @@ export const openAiResponsesAdapter: ProtocolAdapter = {
         content: [{ type: "output_text", text, annotations: [] }]
       });
     }
-    const toolKindByName = new Map(turn.tools.map((t) => [t.name, t.toolKind ?? "function"]));
+    const toolMetaByName = new Map<string, NormalizedTool>();
+    for (const t of turn.tools) {
+      toolMetaByName.set(t.name, t);
+      if (t.wireName && !toolMetaByName.has(t.wireName)) toolMetaByName.set(t.wireName, t);
+    }
     for (const tc of toolCalls) {
-      const kind = toolKindByName.get(tc.name) ?? "function";
+      const meta = toolMetaByName.get(tc.name);
+      const kind = meta?.toolKind ?? "function";
+      const wireName = meta?.wireName ?? tc.name;
+      const nsField = meta?.toolNamespace ? { namespace: meta.toolNamespace } : {};
       if (kind === "custom") {
         const inputStr = typeof tc.argsObject.input === "string" ? tc.argsObject.input : tc.argumentsJson;
         output.push({
@@ -674,7 +708,8 @@ export const openAiResponsesAdapter: ProtocolAdapter = {
           type: "custom_tool_call",
           status: "completed",
           call_id: tc.id,
-          name: tc.name,
+          name: wireName,
+          ...nsField,
           input: inputStr,
         });
       } else if (kind === "local_shell") {
@@ -704,7 +739,8 @@ export const openAiResponsesAdapter: ProtocolAdapter = {
           type: "function_call",
           status: "completed",
           call_id: tc.id,
-          name: tc.name,
+          name: wireName,
+          ...nsField,
           arguments: tc.argumentsJson,
         });
       }
@@ -830,15 +866,22 @@ export const openAiResponsesAdapter: ProtocolAdapter = {
         } else if (ev.type === "tool_calls") {
           yield* closeOpen();
           sawToolCalls = true;
-          const toolKindByName = new Map(turn.tools.map((t) => [t.name, t.toolKind ?? "function"]));
+          const toolMetaByName = new Map<string, NormalizedTool>();
+          for (const t of turn.tools) {
+            toolMetaByName.set(t.name, t);
+            if (t.wireName && !toolMetaByName.has(t.wireName)) toolMetaByName.set(t.wireName, t);
+          }
           for (const tc of ev.calls) {
             const index = output.length;
-            const kind = toolKindByName.get(tc.name) ?? "function";
+            const meta = toolMetaByName.get(tc.name);
+            const kind = meta?.toolKind ?? "function";
+            const wireName = meta?.wireName ?? tc.name;
+            const nsField = meta?.toolNamespace ? { namespace: meta.toolNamespace } : {};
             output.push({});
             if (kind === "custom") {
               const id = newId("ctc");
               const inputStr = typeof tc.argsObject.input === "string" ? tc.argsObject.input : tc.argumentsJson;
-              const base = { id, type: "custom_tool_call", call_id: tc.id, name: tc.name };
+              const base = { id, type: "custom_tool_call", call_id: tc.id, name: wireName, ...nsField };
               yield sse("response.output_item.added", { output_index: index, item: { ...base, status: "in_progress", input: "" } });
               yield sse("response.custom_tool_call_input.delta", { item_id: id, output_index: index, delta: inputStr });
               yield sse("response.custom_tool_call_input.done", { item_id: id, output_index: index, input: inputStr });
@@ -867,10 +910,10 @@ export const openAiResponsesAdapter: ProtocolAdapter = {
               yield sse("response.output_item.done", { output_index: index, item });
             } else {
               const id = newId("fc");
-              const base = { id, type: "function_call", call_id: tc.id, name: tc.name };
+              const base = { id, type: "function_call", call_id: tc.id, name: wireName, ...nsField };
               yield sse("response.output_item.added", { output_index: index, item: { ...base, status: "in_progress", arguments: "" } });
               yield sse("response.function_call_arguments.delta", { item_id: id, output_index: index, delta: tc.argumentsJson });
-              yield sse("response.function_call_arguments.done", { item_id: id, output_index: index, name: tc.name, arguments: tc.argumentsJson });
+              yield sse("response.function_call_arguments.done", { item_id: id, output_index: index, name: wireName, arguments: tc.argumentsJson });
               const item = { ...base, status: "completed", arguments: tc.argumentsJson };
               output[index] = item;
               yield sse("response.output_item.done", { output_index: index, item });

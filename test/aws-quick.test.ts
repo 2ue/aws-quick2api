@@ -592,6 +592,18 @@ describe("Credential parser & ClientKeyStore", () => {
       tools: [
         { type: "custom", name: "apply_patch", description: "Apply unified patch" },
         { type: "local_shell" },
+        {
+          type: "namespace",
+          name: "mcp__local_e2e",
+          tools: [
+            {
+              type: "function",
+              name: "calc_magic_code",
+              description: "Compute verification code",
+              parameters: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] },
+            },
+          ],
+        },
       ],
       input: [
         { type: "message", role: "user", content: [{ type: "input_text", text: "Patch foo.ts and run tests" }] },
@@ -601,14 +613,17 @@ describe("Credential parser & ClientKeyStore", () => {
         { type: "local_shell_call_output", call_id: "call_sh_1", output: "All tests passed" },
       ],
     });
-    assert.equal(codexTurn.tools.length, 2);
+    assert.equal(codexTurn.tools.length, 3);
     assert.equal(codexTurn.tools[0]!.toolKind, "custom");
     assert.equal(codexTurn.tools[1]!.toolKind, "local_shell");
+    assert.equal(codexTurn.tools[2]!.name, "mcp__local_e2e__calc_magic_code");
+    assert.equal(codexTurn.tools[2]!.toolNamespace, "mcp__local_e2e");
+    assert.equal(codexTurn.tools[2]!.wireName, "calc_magic_code");
     assert.equal(codexTurn.hasToolResults, true);
     assert.ok(codexTurn.fullTranscriptText.includes("Patched foo.ts"));
     assert.ok(codexTurn.fullTranscriptText.includes("All tests passed"));
 
-    // Verify Responses adapter emits `custom_tool_call` and `local_shell_call` wire formats
+    // Verify Responses adapter emits `custom_tool_call`, `local_shell_call`, and namespaced `function_call` wire formats
     async function* fakeToolEvents() {
       yield {
         type: "tool_calls" as const,
@@ -625,6 +640,12 @@ describe("Credential parser & ClientKeyStore", () => {
             argumentsJson: JSON.stringify({ command: ["ls", "-la"] }),
             argsObject: { command: ["ls", "-la"] },
           },
+          {
+            id: "call_m1",
+            name: "mcp__local_e2e__calc_magic_code",
+            argumentsJson: JSON.stringify({ a: 12, b: 34 }),
+            argsObject: { a: 12, b: 34 },
+          },
         ],
       };
       yield { type: "done" as const, stopReason: "tool_calls" as const };
@@ -635,6 +656,9 @@ describe("Credential parser & ClientKeyStore", () => {
     assert.equal(outItems[0]!.input, "*** Begin Patch\n*** End Patch");
     assert.equal(outItems[1]!.type, "local_shell_call");
     assert.deepEqual((outItems[1]!.action as Record<string, unknown>).command, ["ls", "-la"]);
+    assert.equal(outItems[2]!.type, "function_call");
+    assert.equal(outItems[2]!.namespace, "mcp__local_e2e");
+    assert.equal(outItems[2]!.name, "calc_magic_code");
 
     // 3. OpenAI Chat Completions multi-turn tool_calls + role:"tool"
     const chatTurn = parseChatCompletionsRequest({

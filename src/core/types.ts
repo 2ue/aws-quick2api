@@ -20,6 +20,10 @@ export interface NormalizedTool {
   inputSchema: Record<string, unknown>;
   /** OpenAI Responses API tool wire kind (defaults to `"function"`). */
   toolKind?: "function" | "custom" | "local_shell";
+  /** OpenAI Responses API namespace (used by Codex CLI for MCP / grouped tools). */
+  toolNamespace?: string;
+  /** Original unqualified tool name when bridged under a namespace prefix. */
+  wireName?: string;
 }
 
 export type NormalizedImage =
