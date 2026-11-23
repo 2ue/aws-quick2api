@@ -4,7 +4,11 @@ import { uploadImageAttachment } from "../src/aws-quick/attachment-upload.js";
 import { toolContract } from "../src/core/tool-contract.js";
 import { buildClientToolReminder, buildToolBridgePrompt } from "../src/core/tool-bridge.js";
 import { parseAnthropicMessagesRequest } from "../src/protocols/anthropic.js";
-import { workingSessionIdForThread } from "../src/core/engine.js";
+import { QuickExecutionEngine, workingSessionIdForThread } from "../src/core/engine.js";
+import { loadConfigFromEnv } from "../src/core/config.js";
+import { UpstreamKeyPool } from "../src/core/key-pool.js";
+import { GatewayError } from "../src/core/types.js";
+import { UsageTracker } from "../src/services/usage-tracker.js";
 
 describe("Native attachment delivery", () => {
   it("uploads original bytes, checks verdict, and delivers a path reference", async () => {
@@ -149,5 +153,24 @@ describe("Upstream connection isolation", () => {
     assert.notEqual(first, workingSessionIdForThread("client-a", "account", "thread-b"));
     assert.notEqual(first, workingSessionIdForThread("client-b", "account", "thread-a"));
     assert.notEqual(first, workingSessionIdForThread("client-a", "other-account", "thread-a"));
+  });
+
+  it("does not cool down a healthy account when generated tool arguments fail validation", async () => {
+    const config = loadConfigFromEnv({ QUICK_TOKENS: "test-account", SESSION_AFFINITY_ENABLED: "false" });
+    const pool = new UpstreamKeyPool(config);
+    const engine = new QuickExecutionEngine({ config, usageTracker: new UsageTracker() });
+    Object.assign(engine, { executeTurnWithLease: async function* () {
+      throw new GatewayError("Invalid generated tool arguments.", 502, "invalid_tool_call");
+    } });
+    const turn = parseAnthropicMessagesRequest({ model: "claude-sonnet-5-5", max_tokens: 100, messages: [{ role: "user", content: "Run a tool." }] });
+    try {
+      await assert.rejects(async () => { for await (const _ of engine.executeTurnWithPool(turn, pool)) { /* drain */ } }, /Invalid generated tool/);
+      const state = pool.statusSnapshot()[0];
+      assert.equal(state.activeInflight, 0);
+      assert.equal(state.cooldownRemainingMs, 0);
+      assert.equal(state.enabled, true);
+    } finally {
+      pool.close();
+    }
   });
 });

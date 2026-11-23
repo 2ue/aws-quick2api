@@ -41,8 +41,12 @@ export function toolContract(tools: readonly NormalizedTool[], choice: ToolChoic
     }
     for (const call of calls) {
       const validate = validators.get(call.name);
-      if (!validate || forced && call.name !== forced || !validate(call.argsObject)) {
+      if (!validate || forced && call.name !== forced) {
         throw new GatewayError(`Upstream returned an invalid call for tool '${call.name}'.`, 502, "invalid_tool_call");
+      }
+      if (!validate(call.argsObject)) {
+        const detail = draft7.errorsText(validate.errors, { dataVar: "arguments" });
+        throw new GatewayError(`Upstream returned invalid arguments for tool '${call.name}': ${detail}.`, 502, "invalid_tool_call");
       }
     }
   };

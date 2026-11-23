@@ -786,6 +786,7 @@ export class QuickExecutionEngine {
             /unauthorized|invalid.?grant|expired|access.?denied|authentication|oauth token refresh failed|session cookie/i.test(lower));
 
         const isProxyOrConnErr =
+          gwErr.code !== "invalid_tool_call" &&
           !isQuotaErr &&
           !isRateLimitErr &&
           !isAuthErr &&
