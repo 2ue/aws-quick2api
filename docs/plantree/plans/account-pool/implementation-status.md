@@ -1,23 +1,25 @@
 # 状态
 
-Current Phase：修复访问密钥列表的 s is not defined，并完成生产重启验收。
+Current Phase：Complete，访问密钥页面和生产重启验收完成。
 
-Next Target：运行有密钥数据的渲染回归，更新 87，核验密钥与凭证页面及账号持久化。
+Next Target：按需扩展完整工具目录和长期负载验证。
 
 Last Landed：2026-11-23，87 已运行改造版；原地址和账密保留。
 
-Active TODO：密钥页面修复上线；保留现有思考显示设置；21 账号重启与界面验证。
+Active TODO：无本次实施待办。
 
-Last Verified：47 项测试与 preflight；真实 stdio / HTTP 延迟 MCP、Sonnet 精简工具、Opus 完整工具、24 次并发会话标记请求。思考显示开关 JSON/SSE 与重启持久化通过；最终 Opus thinking 完整工具及 HTTP MCP、Sonnet thinking 延迟 MCP 通过。结果和失败样本见[兼容性记录](../../../tool-compatibility.md)。
+Last Verified：49 项测试与 preflight；生产浏览器密钥列表、21 行凭证表和路由开关加载正常，无页面脚本错误。实际重启保留 21 账号与思考显示现值，额度同步无错误；线上内置 Read/Bash 和延迟 HTTP MCP 实际执行通过。此前真实 stdio / HTTP MCP、完整文件工具、24 次并发标记测试结果和失败样本见[兼容性记录](../../../tool-compatibility.md)。
 
 证据：87 `/root/docker-compose/aws-quick-comparison/enhanced-deployment.json` 与 `enhanced-smoke-59162.json`、`enhanced-smoke-59158.json`。
 
 边界：当前 21 个真实账号；新增 20 个均参与过成功推理，40 请求全部成功。跨实例刷新未协调。
 
-复现：Claude Code 2.1.280 使用 draft/2020-12 的 Bash / Read schema，现有 Ajv 默认 draft-07 编译失败，首请求返回 400。独立 MCP 普通 schema 的两次真实调用与结果回传已成功；deferred discovery 继续验证。
+已修复：Claude Code 2.1.280 的 draft/2020-12 Schema、MCP 延迟加载 tool_reference、客户端工作区误识别、按线程连接隔离与错误参数触发账号冷却。
 
 约束：独立 CLAUDE_CONFIG_DIR、空 setting-sources、strict-mcp-config；不修改个人 Claude Code 设置或连接个人 MCP。
 
-思考实测：-think / -thinking 已选 high，但 Sonnet 的本组样本没有原生思考事件；Opus 有。ultrathink 正文仍为 off；默认路由说明误用思考块。应补齐入口并默认不生成路由思考块，不能伪造上游未返回的内容。
+思考实测：-think / -thinking 已选 high；关键词与显式参数入口已补齐。Opus 真实思考在隐藏时仍被观测到；显示开关与思考强度独立，默认关闭，运维修改后的现值按原样保留。
 
 上述思考入口和路由说明问题已修复。思考显示默认关闭；真实日志仍可观测到上游思考事件。生产更新证据补充在 87 comparison 目录的 tool-thinking-deployment.json。
+
+访问密钥页面曾混入账号专用并发按钮，引用未定义 s.slotId；已移除并补 populated renderer 回归。生产已实际验证密钥与接入示例恢复，21 个账号数据未丢失。
