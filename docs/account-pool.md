@@ -37,6 +37,8 @@ Haiku / fast 当前归一化为 off；本次未声明其支持思考。Quick 只
 
 上游有时不返回思考文本，是否返回文本不能单独证明是否执行思考。开启显示只转发真实上游事件，不补造内容。`SHOW_ROUTED_MODEL_IN_THINKING=false` 默认关闭旧的路由说明；路由信息不作为思考执行证据。未报告独立 reasoning token 数时不估算该数值。
 
+2026-11-23 候选实测：同样 high 强度，关闭显示的 JSON / SSE 回复都没有思考文本，但请求日志仍观测到真实上游思考事件；开启后分别转发 279 / 199 字符。重启容器仍保留开启设置，验收结束恢复为关闭。字数只代表这组样本，不表示固定思考预算。Claude Code 2.1.280 的 `--effort low/max/xhigh` 已实测发出对应 `output_config.effort` 并成功完成；max/xhigh 最终映射 high。
+
 ## 20 个账号的起始配置
 
 ```dotenv

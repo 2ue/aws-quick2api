@@ -14,10 +14,12 @@
 - Claude Code 工具 Schema、system 消息、ToolSearch 引用与客户端工作区桥接修复。
 - 上游连接按线程隔离；工具参数错误不触发账号冷却。
 - 44 项测试通过，真实 stdio / HTTP MCP、完整文件工具任务与并发会话标记验证；[结果及限制](../../../tool-compatibility.md)。
+- 47 项测试与 preflight 通过；ultrathink、思考参数、默认隐藏及持久化显示开关完成。真实 high 强度下隐藏与显示各验证 JSON/SSE，重启保留设置。
+- 最终候选：Opus thinking + 完整工具目录 + HTTP MCP 完成读写修改与命令验证；Sonnet thinking + stdio 延迟 MCP 完成发现、两次调用与计算。
 
 ## In Progress
 
-- 补齐 ultrathink 关键词、thinking.enabled 等思考入口，区分真实思考事件与路由信息；候选通过后合并发布工具及思考修复。
+暂无本次实现待办；实际运行提交、镜像及生产短验见远端部署证据。
 
 ## Next
 
