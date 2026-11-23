@@ -228,6 +228,7 @@ describe("HTTP protocol routing contracts", () => {
         const setting = await fetch(base+"/v1/admin/settings", { method: "POST", headers: { Authorization: "Bearer test-admin", "Content-Type": "application/json" }, body: JSON.stringify({ showThinkingContent: visible }) });
         assert.equal(setting.status, 200);
         assert.match(readFileSync(envPath, "utf8"), new RegExp(`SHOW_THINKING_CONTENT=${visible}`));
+        assert.equal(loadConfigFromEnv({ SHOW_THINKING_CONTENT: String(!visible), QUICK_TOKENS: "test-account" }, envPath).showThinkingContent, visible);
         for (const [route, payload] of [["messages", { max_tokens: 100, messages: [{ role: "user", content: "hello" }] }],
           ["chat/completions", { messages: [{ role: "user", content: "hello" }] }], ["responses", { input: "hello" }]] as const) {
           for (const stream of [false, true]) {

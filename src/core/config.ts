@@ -143,6 +143,11 @@ export function loadConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
   envFilePath?: string
 ): GatewayConfig {
+  const thinkingSettingsPath = envFilePath || env.ENV_FILE_PATH?.trim();
+  // A console update must survive restarting a container with its original env_file snapshot.
+  const savedThinkingDisplay = thinkingSettingsPath && existsSync(thinkingSettingsPath)
+    ? /^\s*SHOW_THINKING_CONTENT\s*=\s*([^\r\n]*)/m.exec(readFileSync(thinkingSettingsPath, "utf8"))?.[1]?.trim().replace(/^(['"])(.*)\1$/, "$2")
+    : undefined;
   const gatewayTokens = new Set([
     ...splitCsv(env.GATEWAY_TOKEN),
     ...splitCsv(env.GATEWAY_TOKENS)
@@ -182,7 +187,7 @@ export function loadConfigFromEnv(
     gatewayTokens,
     adminPassword,
     enableDashboard,
-    showThinkingContent: parseBoolEnv(env.SHOW_THINKING_CONTENT, false),
+    showThinkingContent: parseBoolEnv(savedThinkingDisplay ?? env.SHOW_THINKING_CONTENT, false),
     dashboardPath,
     quickTokens,
     disabledQuickTokens,
