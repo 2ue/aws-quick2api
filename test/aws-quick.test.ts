@@ -325,6 +325,13 @@ describe("Credential parser & ClientKeyStore", () => {
     for (const c of res.chunks) {
       assert.ok(Buffer.byteLength(c, "utf8") <= 50_000);
     }
+
+    // Oversized customPrompt (>36KB) keeps tail/tool-bridge in native custom_prompt instead of dumping [System Instructions]
+    const bigSys = "Background guidelines.\n".repeat(2200) + "\n## Client Tool Action Format\n<tool_call>";
+    const splitBig = splitPromptIntoSafeChunks("Run tests", bigSys);
+    assert.ok(splitBig.effectiveCustomPrompt && splitBig.effectiveCustomPrompt.includes("## Client Tool Action Format"));
+    assert.ok(Buffer.byteLength(splitBig.effectiveCustomPrompt, "utf8") <= 36_000);
+    assert.ok(!splitBig.chunks.join("").includes("[System Instructions]"));
   });
 
   it("blocks private, loopback, and cloud-metadata image URLs against SSRF", async () => {

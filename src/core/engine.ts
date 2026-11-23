@@ -29,7 +29,11 @@ import type { ExecutionModeTag, UsageTracker } from "../services/usage-tracker.j
 import { extendHashWithAssistantReply, redactSecrets } from "../utils/hash.js";
 import { getProxyAgent } from "../utils/proxy-agent.js";
 import type { UpstreamKeyPool } from "./key-pool.js";
-import { buildToolBridgePrompt, StreamingToolCallFilter } from "./tool-bridge.js";
+import {
+  buildToolBridgePrompt,
+  sanitizeClientSystemPromptForQuick,
+  StreamingToolCallFilter,
+} from "./tool-bridge.js";
 import { StreamingUiTagSanitizer } from "./ui-tag-sanitizer.js";
 import {
   GatewayError,
@@ -292,7 +296,7 @@ export function mapSdkError(err: unknown): GatewayError {
 }
 
 const MAX_WS_PAYLOAD_UTF8_BYTES = 50_000;
-const MAX_INLINE_CUSTOM_PROMPT_BYTES = 16_000;
+const MAX_INLINE_CUSTOM_PROMPT_BYTES = 36_000;
 const DEFAULT_OVERFLOW_COMPACT_TOKENS = 850_000;
 
 /**
@@ -394,8 +398,31 @@ export function splitPromptIntoSafeChunks(
   let effectiveCustomPrompt = customPrompt;
   let fullText = prompt;
   if (customPrompt && customBytes > MAX_INLINE_CUSTOM_PROMPT_BYTES) {
-    effectiveCustomPrompt = null;
-    fullText = `[System Instructions]\n${customPrompt}\n\n${prompt}`;
+    // Keep the tail (including any tool-bridge instructions) inside native `custom_prompt`
+    // so AWS Quick does not treat system/tool instructions as untrusted user-message prompt injection.
+    const keepBudget = Math.min(MAX_INLINE_CUSTOM_PROMPT_BYTES, Math.max(8_192, maxFrameBytes - 10_000));
+    let keepStart = customPrompt.length;
+    let keptBytes = 0;
+    while (keepStart > 0) {
+      const prevIdx = keepStart - 1;
+      const chBytes = Buffer.byteLength(customPrompt[prevIdx]!, "utf8");
+      if (keptBytes + chBytes > keepBudget) break;
+      keptBytes += chBytes;
+      keepStart = prevIdx;
+    }
+    // Avoid splitting UTF-16 surrogate pairs and snap to a nearby newline boundary
+    if (keepStart > 0 && keepStart < customPrompt.length) {
+      const code = customPrompt.charCodeAt(keepStart);
+      if (code >= 0xdc00 && code <= 0xdfff) keepStart += 1;
+      const nl = customPrompt.indexOf("\n", keepStart);
+      if (nl !== -1 && nl - keepStart < 512) keepStart = nl + 1;
+    }
+    const overflowHead = customPrompt.slice(0, keepStart).trim();
+    const keptTail = customPrompt.slice(keepStart).trim();
+    effectiveCustomPrompt = keptTail || null;
+    if (overflowHead) {
+      fullText = `[Reference Context]\n${overflowHead}\n\n${prompt}`;
+    }
   }
 
   const reserved = effectiveCustomPrompt ? Buffer.byteLength(effectiveCustomPrompt, "utf8") : 0;
@@ -818,7 +845,11 @@ export class QuickExecutionEngine {
 
     const toolBridgePrompt = buildToolBridgePrompt(turn.tools, turn.toolChoice);
     const customPromptParts: string[] = [];
-    if (turn.systemPrompt?.trim()) customPromptParts.push(turn.systemPrompt.trim());
+    if (turn.systemPrompt?.trim()) {
+      customPromptParts.push(
+        sanitizeClientSystemPromptForQuick(turn.systemPrompt.trim(), Boolean(toolBridgePrompt)),
+      );
+    }
     if (toolBridgePrompt) customPromptParts.push(toolBridgePrompt);
     const customPrompt = customPromptParts.length > 0 ? customPromptParts.join("\n\n") : null;
 

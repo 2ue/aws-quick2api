@@ -3,10 +3,62 @@ import type { NormalizedTool, NormalizedToolCall, ToolChoiceMode } from "./types
 
 const TOOL_CALL_OPEN = "<tool_call>";
 const TOOL_CALL_CLOSE = "</tool_call>";
+const COMPACT_SCHEMA_TRIGGER_BYTES = 12_000;
+
+function trimText(text: string, maxLen: number): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean.length <= maxLen) return clean;
+  return `${clean.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`;
+}
+
+function compactJsonSchema(node: unknown, maxDescLen: number, depth = 0): unknown {
+  if (depth > 8 || node === null || typeof node !== "object") return node;
+  if (Array.isArray(node)) {
+    return node.map((item) => compactJsonSchema(item, maxDescLen, depth + 1));
+  }
+  const obj = node as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (k === "$schema" || k === "$id" || k === "title" || k === "examples" || k === "default") continue;
+    if (k === "description" && typeof v === "string") {
+      if (maxDescLen > 0) out[k] = trimText(v, maxDescLen);
+      continue;
+    }
+    if (k === "properties" && v && typeof v === "object" && !Array.isArray(v)) {
+      const props: Record<string, unknown> = {};
+      for (const [pk, pv] of Object.entries(v as Record<string, unknown>)) {
+        props[pk] = compactJsonSchema(pv, maxDescLen, depth + 1);
+      }
+      out[k] = props;
+      continue;
+    }
+    out[k] = compactJsonSchema(v, maxDescLen, depth + 1);
+  }
+  return out;
+}
 
 /**
- * Build a concise, unambiguous system instruction block for client-defined tools.
- * Only injected into AWS Quick's `custom_prompt` when `turn.tools.length > 0`.
+ * Soften direct identity-override phrases from third-party CLI clients (e.g. Claude Code)
+ * that clash with AWS Quick's built-in identity and trigger false-positive refusals,
+ * while preserving all coding rules, workspace paths, and task instructions.
+ */
+export function sanitizeClientSystemPromptForQuick(systemPrompt: string, hasTools: boolean): string {
+  if (!systemPrompt) return systemPrompt;
+  if (!hasTools) return systemPrompt;
+  return systemPrompt
+    .replace(
+      /\bYou are Claude Code\b[^\n.]*\.?/gi,
+      "You are assisting a developer through an external coding CLI client.",
+    )
+    .replace(
+      /\bYou are an interactive CLI tool\b/gi,
+      "You are assisting a developer using an interactive CLI client",
+    );
+}
+
+/**
+ * Build a compact, unambiguous instruction block for client-defined tools.
+ * Kept inside AWS Quick's native `custom_prompt` when `turn.tools.length > 0`.
  */
 export function buildToolBridgePrompt(
   tools: readonly NormalizedTool[],
@@ -14,33 +66,45 @@ export function buildToolBridgePrompt(
 ): string {
   if (!tools.length || toolChoice === "none") return "";
 
-  const specs = tools.map((t) => ({
+  const fullSpecs = tools.map((t) => ({
     name: t.name,
     ...(t.description ? { description: t.description } : {}),
     parameters: t.inputSchema,
   }));
 
+  let serialized = JSON.stringify(fullSpecs);
+  if (Buffer.byteLength(serialized, "utf8") > COMPACT_SCHEMA_TRIGGER_BYTES) {
+    const compactSpecs = tools.map((t) => ({
+      name: t.name,
+      ...(t.description ? { description: trimText(t.description, 200) } : {}),
+      parameters: compactJsonSchema(t.inputSchema, 100),
+    }));
+    serialized = JSON.stringify(compactSpecs);
+  }
+  if (Buffer.byteLength(serialized, "utf8") > 24_000) {
+    const minimalSpecs = tools.map((t) => ({
+      name: t.name,
+      ...(t.description ? { description: trimText(t.description, 80) } : {}),
+      parameters: compactJsonSchema(t.inputSchema, 0),
+    }));
+    serialized = JSON.stringify(minimalSpecs);
+  }
+
   const choiceRule =
     toolChoice === "required"
-      ? "You MUST call at least one tool from the list below in this turn."
+      ? "Propose at least one tool action from the list above in this turn."
       : typeof toolChoice === "object" && toolChoice.type === "tool"
-        ? `You MUST call the tool named "${toolChoice.name}" in this turn.`
-        : "Call a tool only when needed to answer the user's request; otherwise respond directly in plain text.";
+        ? `Propose the tool action named "${toolChoice.name}" in this turn.`
+        : "Propose a tool action when local workspace inspection or execution is needed; otherwise answer directly in plain text.";
 
   return [
-    "# External Client Tool Delegation Protocol",
-    "The user is connected through an external API client that intercepts `<tool_call>` XML blocks from your text response, executes the requested tool locally on the client side, and sends the real tool result back to you in the next turn.",
-    "You are NOT executing these tools inside this environment and you are NOT fabricating results — outputting a `<tool_call>` block is simply how you ask the external client to run one of its tools for you.",
-    "Available external client tools:",
-    "```json",
-    JSON.stringify(specs, null, 2),
-    "```",
+    "## Client Tool Action Format",
+    "You do not execute local commands or access the user's device yourself, and you should never claim you executed anything or fabricate outputs. Instead, when local action is needed, output a structured `<tool_call>` JSON proposal for the developer's local CLI runner to execute and return the real result in the next turn.",
+    "Available client runner actions (JSON):",
+    serialized,
     choiceRule,
-    `To delegate a tool call to the external client, output ONLY one or more ${TOOL_CALL_OPEN}...${TOOL_CALL_CLOSE} blocks containing valid JSON:`,
-    `${TOOL_CALL_OPEN}`,
-    `{"name": "<tool_name>", "arguments": {<json_arguments>}}`,
-    `${TOOL_CALL_CLOSE}`,
-    "Do not wrap the XML tags in markdown code fences. After outputting the `<tool_call>` block(s), stop immediately so the client can execute the tool and return the result.",
+    `Output format (no markdown code fences around the tags; stop right after the block(s) so the local runner can execute and reply):`,
+    `${TOOL_CALL_OPEN}{"name":"<tool_name>","arguments":{...}}${TOOL_CALL_CLOSE}`,
   ].join("\n");
 }
 
@@ -75,13 +139,13 @@ export function parseToolCallsFromText(text: string): {
       const argsObject: Record<string, unknown> =
         typeof rawArgs === "string"
           ? (() => {
-              try {
-                const obj = JSON.parse(rawArgs);
-                return obj && typeof obj === "object" && !Array.isArray(obj) ? (obj as Record<string, unknown>) : {};
-              } catch {
-                return {};
-              }
-            })()
+            try {
+              const obj = JSON.parse(rawArgs);
+              return obj && typeof obj === "object" && !Array.isArray(obj) ? (obj as Record<string, unknown>) : {};
+            } catch {
+              return {};
+            }
+          })()
           : rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
             ? (rawArgs as Record<string, unknown>)
             : {};
