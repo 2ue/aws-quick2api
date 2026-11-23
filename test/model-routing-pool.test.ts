@@ -135,6 +135,21 @@ describe("Bounded request admission", () => {
 });
 
 describe("20-account scheduling", () => {
+  it("reloads imported accounts and pool settings from disk after a container restart", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "quick-restart-"));
+    const envPath = path.join(dir, ".env");
+    try {
+      writeFileSync(envPath, 'QUICK_TOKENS=original,imported-a,imported-b\nDISABLED_QUICK_TOKENS=disabled\nACCOUNT_MAX_CONCURRENT=3\nKEY_WEIGHTS={"account":2}\nSHOW_THINKING_CONTENT=true\nGATEWAY_TOKEN=must-not-override\n');
+      const config = loadConfigFromEnv({ QUICK_TOKENS: "original", ACCOUNT_MAX_CONCURRENT: "2", SHOW_THINKING_CONTENT: "false", GATEWAY_TOKEN: "startup-token" }, envPath);
+      assert.deepEqual(config.quickTokens, ["original", "imported-a", "imported-b"]);
+      assert.deepEqual(config.disabledQuickTokens, ["disabled"]);
+      assert.equal(config.accountMaxConcurrent, 3);
+      assert.deepEqual(config.keyWeights, { account: 2 });
+      assert.equal(config.showThinkingContent, true);
+      assert.ok(config.gatewayTokens.has("startup-token"));
+      assert.ok(!config.gatewayTokens.has("must-not-override"));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it("fills 20 accounts fairly, caps each account and resumes on lease release", async () => {
     const accounts = pool();
     try {

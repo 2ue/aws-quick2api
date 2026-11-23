@@ -16,6 +16,7 @@
 - 44 项测试通过，真实 stdio / HTTP MCP、完整文件工具任务与并发会话标记验证；[结果及限制](../../../tool-compatibility.md)。
 - 47 项测试与 preflight 通过；ultrathink、思考参数、默认隐藏及持久化显示开关完成。真实 high 强度下隐藏与显示各验证 JSON/SSE，重启保留设置。
 - 最终候选：Opus thinking + 完整工具目录 + HTTP MCP 完成读写修改与命令验证；Sonnet thinking + stdio 延迟 MCP 完成发现、两次调用与计算。
+- 新增 20 个真实账号，共 21 个；40 次真实请求全部成功，全部新账号参与，峰值 20 账号活跃。额度同步重试后全部成功；补齐重启读取持久化账号池，48 项回归通过。
 
 ## In Progress
 

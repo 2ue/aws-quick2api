@@ -143,11 +143,18 @@ export function loadConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
   envFilePath?: string
 ): GatewayConfig {
-  const thinkingSettingsPath = envFilePath || env.ENV_FILE_PATH?.trim();
-  // A console update must survive restarting a container with its original env_file snapshot.
-  const savedThinkingDisplay = thinkingSettingsPath && existsSync(thinkingSettingsPath)
-    ? /^\s*SHOW_THINKING_CONTENT\s*=\s*([^\r\n]*)/m.exec(readFileSync(thinkingSettingsPath, "utf8"))?.[1]?.trim().replace(/^(['"])(.*)\1$/, "$2")
-    : undefined;
+  const settingsPath = envFilePath || env.ENV_FILE_PATH?.trim();
+  // Console changes must survive a restart with Docker's original env_file snapshot.
+  const persistedNames = new Set(["QUICK_TOKENS", "DISABLED_QUICK_TOKENS", "KEY_LABELS", "KEY_PROXIES", "KEY_ADDED_AT", "KEY_AUTO_DISABLED",
+    "LB_STRATEGY", "ACCOUNT_MAX_CONCURRENT", "KEY_CONCURRENCY_LIMITS", "KEY_WEIGHTS", "SESSION_AFFINITY_ENABLED", "SESSION_AFFINITY_TTL_MS",
+    "AUTO_DISABLE_EXHAUSTED_KEYS", "INCOGNITO", "SHOW_THINKING_CONTENT", "DISABLED_MODELS", "ADMIN_PASSWORD"]);
+  if (settingsPath && existsSync(settingsPath)) {
+    env = { ...env };
+    for (const line of readFileSync(settingsPath, "utf8").split(/\r?\n/)) {
+      const match = /^\s*([A-Z_]+)\s*=(.*)$/.exec(line);
+      if (match && persistedNames.has(match[1]!)) env[match[1]!] = match[2]!.trim().replace(/^(['"])(.*)\1$/, "$2");
+    }
+  }
   const gatewayTokens = new Set([
     ...splitCsv(env.GATEWAY_TOKEN),
     ...splitCsv(env.GATEWAY_TOKENS)
@@ -187,7 +194,7 @@ export function loadConfigFromEnv(
     gatewayTokens,
     adminPassword,
     enableDashboard,
-    showThinkingContent: parseBoolEnv(savedThinkingDisplay ?? env.SHOW_THINKING_CONTENT, false),
+    showThinkingContent: parseBoolEnv(env.SHOW_THINKING_CONTENT, false),
     dashboardPath,
     quickTokens,
     disabledQuickTokens,
