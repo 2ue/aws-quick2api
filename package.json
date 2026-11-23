@@ -1,0 +1,29 @@
+{
+  "name": "aws-quick2api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Headless OpenAI & Anthropic compatible API gateway for AWS Quick (Amazon Quick) with OAuth PKCE, Web Cookie, and Local Outpost support.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/server.js",
+    "dev": "npm run build && node dist/src/server.js",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "preflight": "node scripts/preflight-review.mjs",
+    "ai-review": "node scripts/preflight-review.mjs --ai"
+  },
+  "dependencies": {
+    "sharp": "^0.35.5",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.14",
+    "typescript": "^5.7.0"
+  }
+}

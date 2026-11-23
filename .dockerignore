@@ -1,0 +1,15 @@
+node_modules
+dist
+test
+.env
+.env.*
+!.env.example
+data
+gateway-keys.json
+usage-ledger.json
+admin-session.key
+*.key
+*.tmp
+*.log
+.git
+.DS_Store

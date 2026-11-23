@@ -1,0 +1,56 @@
+export type QuickAgentMode = "fast" | "balanced" | "smart" | "advanced";
+export type QuickThinkingEffort = "off" | "low" | "medium" | "high";
+
+export interface SDKModelParameter {
+  id: string;
+  values: Array<string | { value: string; label?: string }>;
+}
+
+export interface SDKModel {
+  id: string;
+  name?: string;
+  displayName?: string;
+  description?: string;
+  parameters?: SDKModelParameter[];
+  agentMode: QuickAgentMode;
+  thinkingEffort: QuickThinkingEffort;
+}
+
+export interface ModelSelection {
+  model: string;
+  parameters?: Record<string, string>;
+  agentMode: QuickAgentMode;
+  thinkingEffort: QuickThinkingEffort;
+}
+
+export interface CloudSessionMeta {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  message_count: number;
+}
+
+export interface QuickQuotaUsage {
+  session?: {
+    used: number;
+    limit: number;
+    percent: number;
+    label?: string;
+    resets_at?: number | string | null;
+  };
+  monthly?: {
+    used: number;
+    limit: number;
+    percent?: number;
+    label?: string;
+    resets_at?: number | string | null;
+  };
+  subscription?: {
+    subscription_type?: string;
+    free_trial_metadata?: {
+      status?: string;
+      expiry_date?: number;
+    };
+  };
+}

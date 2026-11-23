@@ -1,0 +1,22 @@
+services:
+  aws-quick2api:
+    # Option A (local build): keep `build: .`
+    # Option B (prebuilt multi-arch GHCR image): comment out `build: .` and uncomment the line below
+    # image: ghcr.io/kuk-888/aws-quick2api:latest
+    build: .
+    container_name: aws-quick2api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3456:3456"
+    env_file:
+      - .env
+    environment:
+      # Override HOST to 0.0.0.0 inside container so host port mapping works
+      HOST: "0.0.0.0"
+      DATA_DIR: "/app/data"
+      ENV_FILE_PATH: "/app/.env"
+    volumes:
+      # Mount .env so Web Console hot-updates persist across restarts
+      # Note: Inside Docker, set QUICK_TOKENS to an imported id_token (local-outpost requires macOS Amazon Quick.app)
+      - ./.env:/app/.env
+      - ./data:/app/data
