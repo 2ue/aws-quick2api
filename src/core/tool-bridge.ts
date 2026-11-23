@@ -99,11 +99,15 @@ export function buildToolBridgePrompt(
       ? "Propose at least one tool action from the list above in this turn."
       : typeof toolChoice === "object" && toolChoice.type === "tool"
         ? `Propose the tool action named "${toolChoice.name}" in this turn.`
-        : "Propose a tool action when local workspace inspection or execution is needed; otherwise answer directly in plain text.";
+        : "Use a client tool action whenever the task needs workspace access, command execution, MCP data, or another capability offered by the client tools. Answer directly only when no such action is needed.";
 
   return [
     "## Client Tool Action Format",
-    "You do not execute local commands or access the user's device yourself, and you should never claim you executed anything or fabricate outputs. Instead, when local action is needed, output a structured `<tool_call>` JSON proposal for the developer's local CLI runner to execute and return the real result in the next turn.",
+    "The external client runner executes the tool actions listed below and returns their real results. This client tool catalog is independent of Quick's internal tools and connected sources. Use this bridge for client actions; a missing Quick connector does not mean a client MCP tool is unavailable.",
+    "To invoke a client action, output a structured `<tool_call>` JSON block. Do not merely explain how the user could perform the action. Never fabricate tool outputs; wait for the runner's tool result before reporting completion.",
+    ...(tools.some((tool) => tool.name === "ToolSearch") ? [
+      "For deferred tools, first invoke ToolSearch with query=\"select:<exact_tool_name>\" and max_results=5. Names in the client's deferred-tool catalog are available through that runner even if Quick has no corresponding connector. After ToolSearch returns the schema, invoke the discovered action and continue the task; discovery alone does not complete the requested operation.",
+    ] : []),
     "Available client runner actions (JSON):",
     serialized,
     choiceRule,

@@ -100,6 +100,7 @@ export function parseAnthropicTools(rawTools: unknown): {
 
   for (const item of rawTools) {
     if (!isRecord(item)) continue;
+    if (item.defer_loading === true) continue;
     const rawType = typeof item.type === "string" ? item.type.trim().toLowerCase() : "";
     if (rawType.startsWith("web_search")) {
       nativeSet.add("webSearch");
@@ -171,7 +172,7 @@ export function parseAnthropicMessagesRequest(
   const rawBody: Record<string, unknown> = { ...body };
 
   const requestedModel = requireModelField(body);
-  const systemPrompt = flattenAnthropicSystem(body.system);
+  const systemParts = [flattenAnthropicSystem(body.system)].filter((part): part is string => Boolean(part));
   const { customTools: tools, nativeSdkTools } = parseAnthropicTools(body.tools);
   const toolChoice = parseAnthropicToolChoice(body.tool_choice);
 
@@ -184,6 +185,12 @@ export function parseAnthropicMessagesRequest(
   const messages = body.messages;
   messages.forEach((rawMsg, msgIndex) => {
     if (!isRecord(rawMsg)) return;
+    // Claude Code can move its environment and deferred-tool catalog into a system message.
+    if (rawMsg.role === "system" || rawMsg.role === "developer") {
+      const systemText = flattenAnthropicSystem(rawMsg.content);
+      if (systemText) systemParts.push(systemText);
+      return;
+    }
     const role: "user" | "assistant" = rawMsg.role === "assistant" ? "assistant" : "user";
     const isLastMessage = msgIndex === messages.length - 1;
 
@@ -270,6 +277,7 @@ export function parseAnthropicMessagesRequest(
     }
   });
 
+  const systemPrompt = systemParts.join("\n\n") || undefined;
   const fullTranscriptText = items.length === 1 && items[0].role === "user" && !items[0].hasTools
     ? (items[0].text || (items[0].images.length ? "[Image]" : ""))
     : items.map((it) => it.formattedLine).join("\n\n");

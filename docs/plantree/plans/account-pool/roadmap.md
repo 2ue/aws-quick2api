@@ -14,7 +14,8 @@
 
 ## In Progress
 
-暂无。
+- 隔离 Claude Code 配置，验证内置工具、自动选工具、MCP 和结果回传。
+- 修复 Claude Code draft/2020-12 工具 schema 兼容性；回归与候选验证通过后更新生产。
 
 ## Next
 

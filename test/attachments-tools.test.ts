@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { uploadImageAttachment } from "../src/aws-quick/attachment-upload.js";
 import { toolContract } from "../src/core/tool-contract.js";
+import { buildToolBridgePrompt } from "../src/core/tool-bridge.js";
+import { parseAnthropicMessagesRequest } from "../src/protocols/anthropic.js";
 
 describe("Native attachment delivery", () => {
   it("uploads original bytes, checks verdict, and delivers a path reference", async () => {
@@ -57,5 +59,59 @@ describe("Client tool contracts", () => {
     assert.throws(() => validate([{ ...valid, name: "execute" }]));
     assert.throws(() => validate([{ ...valid, argsObject: { path: 1 } }]));
     assert.throws(() => toolContract([{ name: "remote", inputSchema: { $ref: "https://example.com/schema" } }], "auto", true));
+  });
+
+  it("accepts Claude Code 2020-12 schemas and enforces their native constraints", () => {
+    const schema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: {
+        command: { type: "string" },
+        bounds: { type: "array", prefixItems: [{ type: "integer" }, { type: "string" }], items: false },
+      },
+      required: ["command"],
+      unevaluatedProperties: false,
+    };
+    const validate = toolContract([{ name: "Bash", inputSchema: schema }], "auto", true);
+    const call = (argsObject: Record<string, unknown>) => ({ id: "call", name: "Bash", argsObject, argumentsJson: JSON.stringify(argsObject) });
+    assert.doesNotThrow(() => validate([call({ command: "printf test", bounds: [2, "end"] })]));
+    assert.throws(() => validate([call({ command: "printf test", extra: true })]));
+    assert.throws(() => validate([call({ command: "printf test", bounds: ["wrong", "end"] })]));
+    assert.throws(() => validate([call({ command: "printf test", bounds: [2, "end", 3] })]));
+  });
+
+  it("supports 2019-09 schemas without weakening references or legacy schemas", () => {
+    const schema = {
+      $schema: "https://json-schema.org/draft/2019-09/schema",
+      type: "object", $defs: { path: { type: "string", minLength: 1 } },
+      properties: { path: { $ref: "#/$defs/path" } }, required: ["path"], unevaluatedProperties: false,
+    };
+    const validate = toolContract([{ name: "Read", inputSchema: schema }], "auto", true);
+    assert.doesNotThrow(() => validate([{ id: "call", name: "Read", argsObject: { path: "probe.txt" }, argumentsJson: '{"path":"probe.txt"}' }]));
+    assert.throws(() => validate([{ id: "call", name: "Read", argsObject: { path: "" }, argumentsJson: '{"path":""}' }]));
+    assert.throws(() => toolContract([{ name: "remote", inputSchema: { ...schema, $ref: "https://example.com/schema" } }], "auto", true));
+  });
+});
+
+describe("Claude Code deferred MCP tools", () => {
+  it("preserves the deferred catalog as system context without changing the user turn", () => {
+    const turn = parseAnthropicMessagesRequest({
+      model: "claude-sonnet-5-5", max_tokens: 1000, system: "Client system rules.",
+      messages: [
+        { role: "user", content: "Look up a private record." },
+        { role: "system", content: [{ type: "text", text: "Deferred tools available via ToolSearch: mcp__demo__lookup" }] },
+      ],
+      tools: [
+        { name: "DeferredToolPlaceholder", defer_loading: true, input_schema: { type: "object" } },
+        { name: "ToolSearch", input_schema: { type: "object", properties: { query: { type: "string" } } } },
+      ],
+    });
+    assert.equal(turn.fullTranscriptText, "Look up a private record.");
+    assert.equal(turn.systemPrompt, "Client system rules.\n\nDeferred tools available via ToolSearch: mcp__demo__lookup");
+    assert.deepEqual(turn.tools.map((tool) => tool.name), ["ToolSearch"]);
+    const prompt = buildToolBridgePrompt(turn.tools, "auto");
+    assert.match(prompt, /first invoke ToolSearch/);
+    assert.match(prompt, /max_results=5/);
+    assert.match(prompt, /missing Quick connector does not mean/);
   });
 });
