@@ -921,7 +921,7 @@ export class QuickExecutionEngine {
       for (const image of imageInputs) {
         uploaded.push(await uploadImageAttachment({ credential: credential.oauth, accessToken, threadId, workingSessionId,
           outpostId: deriveStableOutpostId(credential.oauth.clientId), name: image.name, mimeType: image.mimeType,
-          bytes: Buffer.from(image.data.slice(image.data.indexOf(",")+1), "base64"), signal: turn.signal, proxyUrl: lease.proxyUrl }));
+          bytes: Buffer.from(image.data.slice(image.data.indexOf(",")+1), "base64"), signal: turn.signal, proxyUrl: lease.proxyUrl || process.env.HTTPS_PROXY || process.env.HTTP_PROXY }));
       }
       attachments = uploaded;
     }

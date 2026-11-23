@@ -701,7 +701,7 @@ export class UpstreamKeyPool {
     const multiplier = Math.min(10, 2 ** (slot.consecutiveRateLimits - 1));
     const backoffMs = Math.min(300_000, this.baseCooldownMs * multiplier);
     slot.cooldownUntil = Date.now() + backoffMs;
-    this.affinityTable.evictAllForKey(rawKey);
+    this.affinityTable.evictAllForKey(slot.rawKey);
   }
 
   /**
@@ -713,7 +713,7 @@ export class UpstreamKeyPool {
     const slot = this.slots.find((s) => s.slotId === computeKeySlotId(rawKey));
     if (!slot) return;
     slot.quotaExhaustedHits += 1;
-    this.affinityTable.evictAllForKey(rawKey);
+    this.affinityTable.evictAllForKey(slot.rawKey);
 
     const pool = classifyModelQuotaPool(requestedModel);
     if (pool === "auto") {
@@ -742,7 +742,7 @@ export class UpstreamKeyPool {
     const slot = this.slots.find((s) => s.slotId === computeKeySlotId(rawKey));
     if (!slot) return;
     slot.authErrors += 1;
-    this.affinityTable.evictAllForKey(rawKey);
+    this.affinityTable.evictAllForKey(slot.rawKey);
 
     if (this.autoDisableExhaustedKeys) {
       slot.enabled = false;
@@ -812,7 +812,7 @@ export class UpstreamKeyPool {
       slot.autoDisabledReason = slot.apiPoolExhausted
         ? "Auto-disabled: Monthly 10h pool reached 0%"
         : "Auto-disabled: Session burst pool reached 0%";
-      this.affinityTable.evictAllForKey(rawKey);
+      this.affinityTable.evictAllForKey(slot.rawKey);
       this.persist();
       return;
     }

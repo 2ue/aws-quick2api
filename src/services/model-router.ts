@@ -1,5 +1,5 @@
 import { BUILTIN_MODEL_CONFIG, type ModelDefinition } from "./model-config.js";
-import type { ModelSelection, QuickAgentMode, QuickThinkingEffort, SDKModel } from "../aws-quick/types.js";
+import type { ModelSelection, QuickThinkingEffort, SDKModel } from "../aws-quick/types.js";
 import { GatewayError } from "../core/types.js";
 
 export interface ModelRoute {
@@ -20,8 +20,8 @@ for (const definition of definitions) {
     aliases.set(base, { definition, effort: definition.mode === "advanced" ? "high" : "off" });
     if (definition.mode === "advanced") continue;
     for (const effort of ["off", "low", "medium", "high"] as const) aliases.set(`${base}-${effort}`, { definition, effort });
-    if (definition.mode !== "fast") {
-      aliases.set(`${base}-think`, { definition, effort: "high" });
+    if (definition.thinking) {
+      aliases.set(`${base}${definition.thinking.suffix}`, { definition, effort: definition.thinking.defaultEffort });
       aliases.set(`${base}-thinking`, { definition, effort: "high" });
     }
     aliases.set(`${base}-max`, { definition, effort: "high", normalized: "max-to-high" });
@@ -116,11 +116,11 @@ export function routeSelection(route: ModelRoute): ModelSelection {
   return { model: route.canonicalModel, agentMode: route.agentMode, thinkingEffort: route.thinkingEffort };
 }
 
-export function canonicalModelCatalog(_allowAdvanced = false): SDKModel[] {
+export function canonicalModelCatalog(): SDKModel[] {
   return definitions.filter((d) => d.mode !== "advanced").flatMap((d) => {
     const base: SDKModel = { id: d.id, name: d.name, displayName: d.name, agentMode: d.mode, thinkingEffort: "off",
       parameters: d.mode === "fast" ? [] : [{ id: "effort", values: ["off", "low", "medium", "high"] }] };
-    return d.mode === "fast" ? [base] : [base, { ...base, id: `${d.id}-think`, name: `${d.name} (Thinking)`,
-      displayName: `${d.name} (Thinking)`, thinkingEffort: "high" }];
+    return !d.thinking ? [base] : [base, { ...base, id: `${d.id}${d.thinking.suffix}`, name: `${d.name} (Thinking)`,
+      displayName: `${d.name} (Thinking)`, thinkingEffort: d.thinking.defaultEffort }];
   });
 }

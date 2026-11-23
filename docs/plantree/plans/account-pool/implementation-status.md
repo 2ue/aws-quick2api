@@ -1,11 +1,11 @@
 # 状态
 
-Current Phase：本地实现与测试。
+Current Phase：候选镜像验证通过，准备最终构建与主端口更新。
 
-Next Target：候选 Docker 镜像。
+Next Target：87 拉取最终提交、构建并更新 59158。
 
-Last Landed：分支 feat/model-routing-account-pool。
+Last Landed：38 项测试；候选真实三协议、五型号、工具回传、图片识别、2/4 路请求通过。
 
-Active TODO：测试、镜像、候选验收、主端口切换。
+Active TODO：最终检查与主端口更新。
 
-Blocked By：无；只有 1 个真实账号。
+Blocked By：无；20 账号仅模拟调度验证，真实账号当前 1 个。
