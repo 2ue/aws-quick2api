@@ -262,6 +262,35 @@ describe("Credential parser & ClientKeyStore", () => {
     assert.doesNotThrow(() => new vm.Script(match[1]!));
   });
 
+  it("renders populated access-key rows without account-pool state", () => {
+    const html = renderDashboardHtml("/dashboard", "test-nonce");
+    const script = /<script nonce="test-nonce">([\s\S]*?)<\/script>/.exec(html)![1]!;
+    const start = script.indexOf("function renderClientKeysTable()");
+    const end = script.indexOf("function renderCkChecklist()", start);
+    assert.ok(start > 0 && end > start);
+    const body = { innerHTML: "" };
+    const sandbox = {
+      clientKeysCache: [
+        { id: "key-a", name: "All models key", enabled: true, allowAllModels: true, maskedToken: "sk-test***", stats: {} },
+        { id: "key-b", name: "Limited key", enabled: false, allowAllModels: false, allowedModels: ["claude-opus-5-5"], maskedToken: "sk-other***", maxConcurrent: 3, maxRequests: 10, stats: { requests: 2 } },
+      ],
+      selectedCkConnectId: "key-a",
+      $: (id: string) => { assert.equal(id, "clientKeysBody"); return body; },
+      tr: (zh: string) => zh,
+      esc: (value: unknown) => String(value ?? ""),
+      fmt: (value: unknown) => String(value ?? 0),
+      fmtTok: (value: unknown) => String(value ?? 0),
+    };
+    vm.runInNewContext(script.slice(start, end) + "\nrenderClientKeysTable();", sandbox);
+    assert.match(body.innerHTML, /All models key/);
+    assert.match(body.innerHTML, /Limited key/);
+    assert.match(body.innerHTML, /data-click="openEditCkModal" data-arg="key-b"/);
+    assert.doesNotMatch(body.innerHTML, /editAccountLimits/);
+    sandbox.clientKeysCache = [];
+    vm.runInNewContext(script.slice(start, end) + "\nrenderClientKeysTable();", sandbox);
+    assert.match(body.innerHTML, /暂无网关密钥/);
+  });
+
   it("enforces one-time initial admin password setup and min length", () => {
     const auth = new AdminAuthManager({ adminPassword: undefined });
     assert.equal(auth.isPasswordConfigured(), false);

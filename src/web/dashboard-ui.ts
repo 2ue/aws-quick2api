@@ -3318,7 +3318,6 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
           '<td>' + limitHtml + '</td>' +
           '<td class="mono" style="font-size:11.5px;"><div>' + esc(tr('入 ', 'In ')) + fmtTok(st.inputTokens) + esc(tr(' / 出 ', ' / Out ')) + fmtTok(st.outputTokens) + '</div><div style="color:var(--fg-muted);">' + esc(lastTime) + '</div></td>' +
           '<td class="ops-cell"><div class="ops-stack">' +
-            '<button class="btn-xs" data-click="editAccountLimits" data-arg="' + esc(s.slotId) + '">' + esc(tr('并发 / 权重', 'Limits / weight')) + '</button>' +
             '<button class="btn-xs" data-click="selectCkForConnect" data-arg="' + esc(k.id) + '">' + esc(tr('接入', 'Connect')) + '</button>' +
             '<button class="btn-xs" data-click="openEditCkModal" data-arg="' + esc(k.id) + '">' + esc(tr('编辑配置', 'Edit')) + '</button>' +
             (k.maxRequests != null && st.requests > 0 ? '<button class="btn-xs" data-click="resetCkUsedCount" data-arg="' + esc(k.id) + '">' + esc(tr('重置次数', 'Reset')) + '</button>' : '') +
