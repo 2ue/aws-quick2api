@@ -93,6 +93,12 @@ export class SessionAffinityTable {
     this.maxEntries = maxEntries;
   }
 
+  replaceCredential(slotId: string, rawKey: string, maskedKey: string): void {
+    for (const record of this.map.values()) {
+      if (record.slotId === slotId) { record.rawKey = rawKey; record.maskedKey = maskedKey; }
+    }
+  }
+
   get size(): number {
     this.pruneExpired();
     return this.map.size;

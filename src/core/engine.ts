@@ -1,3 +1,6 @@
+import { toolContract } from "./tool-contract.js";
+import { uploadImageAttachment, type NativeAttachment } from "../aws-quick/attachment-upload.js";
+import { routeSelection } from "../services/model-router.js";
 import crypto from "node:crypto";
 import dns from "node:dns/promises";
 import net from "node:net";
@@ -28,7 +31,7 @@ import { listLiveModels, resolveModelSelection } from "../services/model-catalog
 import type { ExecutionModeTag, UsageTracker } from "../services/usage-tracker.js";
 import { extendHashWithAssistantReply, redactSecrets } from "../utils/hash.js";
 import { getProxyAgent } from "../utils/proxy-agent.js";
-import type { UpstreamKeyPool } from "./key-pool.js";
+import { type UpstreamKeyPool, computeKeySlotId } from "./key-pool.js";
 import {
   buildToolBridgePrompt,
   sanitizeClientSystemPromptForQuick,
@@ -128,6 +131,7 @@ export async function buildQuickImageAttachments(
   images: readonly NormalizedImage[] | undefined,
   signal?: AbortSignal,
   totalBase64Budget = MAX_TOTAL_IMAGE_BASE64_CHARS,
+  preserveOriginal = false,
 ): Promise<QuickImageAttachment[]> {
   if (!images || images.length === 0) return [];
   const out: QuickImageAttachment[] = [];
@@ -173,7 +177,8 @@ export async function buildQuickImageAttachments(
     const effectiveTotalBudget = Math.max(12_000, Math.min(MAX_TOTAL_IMAGE_BASE64_CHARS, totalBase64Budget));
     const perImageBudget = Math.max(8_000, Math.floor(effectiveTotalBudget / images.length));
     const rawBuf = Buffer.from(rawBase64, "base64");
-    const fitted = await compressImageForQuickFrame(rawBuf, mimeType, perImageBudget);
+    if (rawBuf.length > MAX_REMOTE_IMAGE_BYTES) throw new GatewayError("Image exceeds 10 MB limit.", 400, "image_too_large");
+    const fitted = preserveOriginal ? { buf: rawBuf, mimeType, base64: rawBase64 } : await compressImageForQuickFrame(rawBuf, mimeType, perImageBudget);
     const contentSha256 = crypto.createHash("sha256").update(fitted.buf).digest("hex");
     const ext = extForImageMime(fitted.mimeType);
     out.push({
@@ -745,7 +750,7 @@ export class QuickExecutionEngine {
     const maxAttempts = Math.min(Math.max(1, keyPool.enabledKeyCount()), 5);
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const lease = keyPool.leaseKey(turn.requestedModel, excluded.size > 0 ? excluded : undefined, turn.conversationKey);
+      const lease = await keyPool.acquireKey(turn.requestedModel, excluded.size > 0 ? excluded : undefined, turn.conversationKey, turn.signal);
       const isIncognito = keyPool.getSettings().incognitoMode;
       let yieldedOutput = false;
 
@@ -801,7 +806,7 @@ export class QuickExecutionEngine {
           excluded.add(lease.apiKey);
           const hasUntriedEnabledKey = keyPool
             .allManagedKeys()
-            .some((k) => k.enabled && !excluded.has(k.rawKey));
+            .some((k) => k.enabled && ![...excluded].some((key) => computeKeySlotId(key) === k.slotId));
           if (hasUntriedEnabledKey) continue;
         }
         throw gwErr;
@@ -844,6 +849,7 @@ export class QuickExecutionEngine {
       usedProxy: Boolean(lease.proxyUrl || process.env.HTTPS_PROXY || process.env.HTTP_PROXY),
     });
 
+    const validateTools = turn.tools.length ? toolContract(turn.tools, turn.toolChoice, turn.rawBody.parallel_tool_calls !== false) : undefined;
     const toolBridgePrompt = buildToolBridgePrompt(turn.tools, turn.toolChoice);
     const customPromptParts: string[] = [];
     if (turn.systemPrompt?.trim()) {
@@ -861,7 +867,10 @@ export class QuickExecutionEngine {
     const approxTextBytes =
       Buffer.byteLength(rawPromptText || "", "utf8") + Buffer.byteLength(customPrompt || "", "utf8");
     const adaptiveImageBudget = Math.max(18_000, Math.min(38_000, 44_000 - approxTextBytes));
-    const attachments = await buildQuickImageAttachments(sourceImages, turn.signal, adaptiveImageBudget);
+    const credential = parseQuickCredential(lease.apiKey);
+    const useNativeImages = Boolean(credential.oauth) && process.env.NATIVE_IMAGE_UPLOAD !== "false";
+    const imageInputs = await buildQuickImageAttachments(sourceImages, turn.signal, adaptiveImageBudget, useNativeImages);
+    let attachments: Array<QuickImageAttachment | NativeAttachment> = imageInputs;
     let prompt = rawPromptText?.trim() || (attachments.length > 0 ? "Please analyze the attached image(s)." : "");
     if (!prompt) {
       throw new GatewayError("Empty prompt", 400, "invalid_request_error");
@@ -889,7 +898,7 @@ export class QuickExecutionEngine {
     const toolFilter = toolBridgePrompt ? new StreamingToolCallFilter() : null;
     const uiTagSanitizer = this.sanitizeAwsUiTags ? new StreamingUiTagSanitizer() : null;
 
-    const { selection } = await this.resolveModel(lease.apiKey, turn.requestedModel, turn.rawBody);
+    const selection = turn.modelRoute ? routeSelection(turn.modelRoute) : (await this.resolveModel(lease.apiKey, turn.requestedModel, turn.rawBody)).selection;
 
     const cred = parseQuickCredential(lease.apiKey);
     const isWeb = cred.mode === "web" && !!cred.web;
@@ -905,6 +914,17 @@ export class QuickExecutionEngine {
       this.workingSessionIds.set(lease.slotId, workingSessionId);
     }
     const threadId = warmThreadId || crypto.randomUUID();
+
+    if (useNativeImages && credential.oauth && imageInputs.length) {
+      const { accessToken } = await resolveOAuthAccessToken(credential.oauth, false, lease.proxyUrl);
+      const uploaded: NativeAttachment[] = [];
+      for (const image of imageInputs) {
+        uploaded.push(await uploadImageAttachment({ credential: credential.oauth, accessToken, threadId, workingSessionId,
+          outpostId: deriveStableOutpostId(credential.oauth.clientId), name: image.name, mimeType: image.mimeType,
+          bytes: Buffer.from(image.data.slice(image.data.indexOf(",")+1), "base64"), signal: turn.signal, proxyUrl: lease.proxyUrl }));
+      }
+      attachments = uploaded;
+    }
 
     let ws: WebSocket;
     let actorArn: string | undefined;
@@ -1373,6 +1393,8 @@ export class QuickExecutionEngine {
           if (item.type === "__error") {
             throw item.error;
           }
+          if (item.type === "tool_calls") validateTools?.(item.calls);
+          if (item.type === "done" && item.stopReason !== "tool_calls") validateTools?.([]);
           yield item;
           if (item.type === "done") return;
         }
@@ -1382,7 +1404,7 @@ export class QuickExecutionEngine {
       clearPing();
       clearTimeout(timer);
       turn.signal?.removeEventListener("abort", onAbort);
-      lease.release();
+      // The outer retry loop owns the account lease, including any summary request.
       // Close immediately unless a normal incognito+autoDeleteSession turn is awaiting session_deleted (1s max).
       if (!(ended && isIncognito && this.autoDeleteSession)) {
         try {

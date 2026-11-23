@@ -107,7 +107,7 @@ describe("Model catalog & parameter resolution", () => {
 
   it("formats OpenAI /v1/models list", () => {
     const list = formatOpenAiModelList(AWS_QUICK_MODELS);
-    assert.equal(list.length, 6);
+    assert.equal(list.length, 5);
     assert.equal(list[0]!.owned_by, "aws-quick");
   });
 });

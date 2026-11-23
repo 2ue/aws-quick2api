@@ -1,3 +1,4 @@
+import { persistRefreshedOAuthTokens } from "./oauth-token-store.js";
 import crypto from "node:crypto";
 import http from "node:http";
 import WebSocket from "ws";
@@ -678,6 +679,7 @@ export async function resolveOAuthAccessToken(
   const currentExpiry = cached?.expiresAt || cred.expiresAt || 0;
 
   if (!forceRefresh && currentAccess && currentExpiry > now + 300_000) {
+    if (cached) await persistRefreshedOAuthTokens({ clientId: cred.clientId, wsHost: cred.wsHost, ...cached });
     return { accessToken: currentAccess, expiresAt: currentExpiry };
   }
 
@@ -718,6 +720,8 @@ export async function resolveOAuthAccessToken(
       refreshToken: nextRefresh,
       expiresAt: nextExpiry,
     });
+    await persistRefreshedOAuthTokens({ clientId: cred.clientId, wsHost: cred.wsHost,
+      accessToken: data.accessToken, refreshToken: nextRefresh, expiresAt: nextExpiry });
     return {
       accessToken: data.accessToken,
       expiresAt: nextExpiry,

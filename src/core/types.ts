@@ -1,3 +1,4 @@
+import type { ModelRoute } from "../services/model-router.js";
 export class GatewayError extends Error {
   readonly status: number;
   readonly code: string;
@@ -56,6 +57,7 @@ export type ToolChoiceMode =
  * Pure protocol-parsed turn representation (decoupled from upstream `apiKey` selection).
  */
 export interface ParsedProtocolTurn {
+  modelRoute?: ModelRoute;
   requestedModel: string;
   rawBody: Record<string, unknown>;
   /** Deterministic or header-derived conversation key for CPA-style 1h sticky Session Affinity. */
@@ -158,4 +160,10 @@ export interface GatewayConfig {
   /** Default max in-flight requests per managed client key when the key has no own limit (0 = unlimited). */
   clientKeyMaxConcurrent: number;
   maxBodyBytes: number;
+  globalMaxConcurrent?: number;
+  maxQueuedRequests?: number;
+  queueWaitTimeoutMs?: number;
+  accountMaxConcurrent?: number;
+  keyConcurrencyLimits?: Record<string, number>;
+  keyWeights?: Record<string, number>;
 }

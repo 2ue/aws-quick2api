@@ -18,6 +18,7 @@
     "ai-review": "node scripts/preflight-review.mjs --ai"
   },
   "dependencies": {
+    "ajv": "8.17.1",
     "sharp": "^0.35.5",
     "ws": "^8.18.0"
   },

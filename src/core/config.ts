@@ -33,6 +33,14 @@ function parseIntEnv(val: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+function parsePositiveMap(raw: string | undefined): Record<string, number> {
+  try {
+    const value = JSON.parse(raw || "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter(([key, n]) => !["__proto__", "constructor", "prototype"].includes(key) && typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 100).map(([key, n]) => [key, n as number]));
+  } catch { return {}; }
+}
+
 function parseBoolEnv(val: string | undefined, fallback: boolean): boolean {
   if (val === undefined || val === "") return fallback;
   const v = val.trim().toLowerCase();
@@ -197,6 +205,12 @@ export function loadConfigFromEnv(
     maxWarmSessions: Math.max(1, parseIntEnv(env.MAX_WARM_SESSIONS, 256)),
     keyCooldownMs: parseIntEnv(env.KEY_COOLDOWN_MS, 30 * 1000) || 30_000,
     clientKeyMaxConcurrent: Math.max(0, parseIntEnv(env.CLIENT_KEY_MAX_CONCURRENT, 0)),
+    globalMaxConcurrent: Math.max(1, parseIntEnv(env.GLOBAL_MAX_CONCURRENT, 20)),
+    maxQueuedRequests: parseIntEnv(env.MAX_QUEUED_REQUESTS, 200),
+    queueWaitTimeoutMs: Math.max(1, parseIntEnv(env.QUEUE_WAIT_TIMEOUT_MS, 30000)),
+    accountMaxConcurrent: Math.max(1, parseIntEnv(env.ACCOUNT_MAX_CONCURRENT, 2)),
+    keyConcurrencyLimits: parsePositiveMap(env.KEY_CONCURRENCY_LIMITS),
+    keyWeights: parsePositiveMap(env.KEY_WEIGHTS),
     maxBodyBytes: parseIntEnv(env.MAX_BODY_BYTES, 16 * 1024 * 1024) || 16_777_216
   };
 }
@@ -246,6 +260,9 @@ export function persistPoolConfigToEnvFile(
     sessionAffinityTtlMs: number;
     autoDisableExhaustedKeys: boolean;
     incognitoMode?: boolean;
+    accountMaxConcurrent?: number;
+    keyConcurrencyLimits?: Record<string, number>;
+    keyWeights?: Record<string, number>;
   }
 ): void {
   if (!envFilePath || !existsSync(envFilePath)) return;
@@ -258,6 +275,9 @@ export function persistPoolConfigToEnvFile(
     ...(state.keyAddedAt ? { KEY_ADDED_AT: stripEnvNewlines(JSON.stringify(state.keyAddedAt)) } : {}),
     KEY_AUTO_DISABLED: stripEnvNewlines(JSON.stringify(state.keyAutoDisabled)),
     LB_STRATEGY: state.lbStrategy,
+    ...(state.accountMaxConcurrent ? { ACCOUNT_MAX_CONCURRENT: String(state.accountMaxConcurrent) } : {}),
+    ...(state.keyConcurrencyLimits ? { KEY_CONCURRENCY_LIMITS: JSON.stringify(state.keyConcurrencyLimits) } : {}),
+    ...(state.keyWeights ? { KEY_WEIGHTS: JSON.stringify(state.keyWeights) } : {}),
     SESSION_AFFINITY_ENABLED: String(state.sessionAffinityEnabled),
     SESSION_AFFINITY_TTL_MS: String(state.sessionAffinityTtlMs),
     AUTO_DISABLE_EXHAUSTED_KEYS: String(state.autoDisableExhaustedKeys),

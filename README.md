@@ -13,6 +13,10 @@
 
 ---
 
+## 本分支：模型与账号池
+
+内置标准 Claude 模型名称与 `-think` 变体，统一三协议路由，增加全局、客户端、每账号并发限制和有界队列。使用说明见 [账号池与模型路由](docs/account-pool.md)。
+
 ## 主要特性
 
 - **OpenAI & Anthropic 双协议接口**：同时提供 OpenAI（`/v1/chat/completions`、`/v1/responses`、`/v1/models`）与 Anthropic（`/v1/messages`、`/v1/messages/count_tokens`）端点，支持 SSE 流式输出、工具调用（Tool/Function Calling）、思考链与多模态识图（Base64 及带 SSRF 防护的 10 MB 内远端图片）。

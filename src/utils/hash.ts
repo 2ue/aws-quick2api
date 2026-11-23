@@ -1,3 +1,4 @@
+import { canonicalModelId } from "../services/model-router.js";
 import crypto from "node:crypto";
 import type { NormalizedImage } from "../core/types.js";
 
@@ -22,14 +23,7 @@ export function safeStringEquals(a: string, b: string): boolean {
 }
 
 export function normalizeBaseModelId(modelId: string): string {
-  let base = modelId.split("[")[0]?.trim().toLowerCase() ?? "";
-  base = base.replace(/\([^)]*\)$/, "").trim();
-  if (base === "default") return "auto";
-  if (base.endsWith("-fast") && base !== "quick-fast") base = base.slice(0, -"-fast".length);
-  if (base.endsWith("-slow")) base = base.slice(0, -"-slow".length);
-  const ctxSuffix = /^(.+?)-(\d+(?:\.\d+)?[km])$/i.exec(base);
-  if (ctxSuffix) base = ctxSuffix[1]!;
-  return base;
+  return canonicalModelId(modelId);
 }
 
 export function computeConversationHash(parts: readonly string[]): string {

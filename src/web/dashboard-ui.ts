@@ -1137,6 +1137,12 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
             </div>
 
             <div class="setting-row">
+              <div class="setting-info"><h3>默认每账号并发上限</h3><p>账号池中的默认并发数；单个账号可在凭证页覆盖。达到上限后等待空位。</p></div>
+              <input id="cfgAccountMaxConcurrent" type="number" min="1" max="100" value="2" style="width:90px;" />
+            </div>
+            <div class="setting-row"><div class="setting-info"><h3>请求队列</h3><p id="admissionStats">正在读取</p></div></div>
+
+            <div class="setting-row">
               <div class="setting-info">
                 <h3>会话粘性亲和 (Sticky Session Affinity)</h3>
                 <p>开启后，同一对话窗口在有效期内始终锁定同一健康账号执行，防止跨号跳跃；若原账号耗尽或限流则自动漂移至健康账号。</p>
@@ -2507,6 +2513,9 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
       renderCredTable();
 
       if (settings.lbStrategy) { $("cfgLbStrategy").value = settings.lbStrategy; syncSelectUi($("cfgLbStrategy")); }
+      $("cfgAccountMaxConcurrent").value = settings.accountMaxConcurrent || 2;
+      const admission = (data.runtime || {}).admission;
+      $("admissionStats").textContent = admission ? tr("活跃 / 上限：", "Active / limit: ") + admission.active + " / " + admission.maxConcurrent + tr("；排队 / 上限：", "; queued / limit: ") + admission.queued + " / " + admission.maxQueued : "—";
       $("cfgAffinityEnabled").checked = settings.sessionAffinityEnabled !== false;
       $("cfgAffinityTtl").value = settings.sessionAffinityTtlSeconds || 3600;
       $("cfgAutoDisable").checked = settings.autoDisableExhaustedKeys !== false;
@@ -2669,7 +2678,7 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
           '<td class="run-cell" style="font-size:11.5px;">' +
             '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
               renderStatusDot(s) +
-              '<span style="color:var(--fg-muted);">' + esc(tr('调度 ', 'Req ')) + fmt(s.totalSelected) + ' · 429: ' + fmt(s.rateLimitHits) + '</span>' +
+              '<span style="color:var(--fg-muted);">' + esc(tr('并发 ', 'Active ')) + fmt(s.activeInflight) + '/' + fmt(s.maxConcurrent || 2) + ' · ' + esc(tr('调度 ', 'Req ')) + fmt(s.totalSelected) + ' · 429: ' + fmt(s.rateLimitHits) + '</span>' +
             '</div>' +
             '<div style="font-size:11px;color:var(--fg-muted);margin-top:4px;">' +
               (isClearing
@@ -2679,6 +2688,7 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
             (s.autoDisabledReason ? '<div style="color:' + (s.autoDisabledKind === 'quota' ? 'var(--warn)' : 'var(--err)') + ';margin-top:3px;">' + esc(s.autoDisabledReason) + '</div>' : '') +
           '</td>' +
           '<td class="ops-cell"><div class="ops-stack">' +
+            '<button class="btn-xs" data-click="editAccountLimits" data-arg="' + esc(s.slotId) + '">' + esc(tr('并发 / 权重', 'Limits / weight')) + '</button>' +
             '<button class="btn-xs" data-click="jumpToAccountLogs" data-arg="' + esc(s.slotId) + '">' + esc(tr('日志', 'Logs')) + '</button>' +
             '<button class="btn-xs" data-click="editLabel" data-arg="' + esc(s.slotId) + '" data-arg2="' + esc(s.label || '') + '">' + esc(tr('备注', 'Label')) + '</button>' +
             '<button class="btn-xs" data-click="editProxy" data-arg="' + esc(s.slotId) + '" data-arg2="' + esc(s.maskedProxy || '') + '">' + esc(tr('代理', 'Proxy')) + '</button>' +
@@ -2689,6 +2699,22 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
         '</tr>';
       }).join("") : '<tr><td colspan="7" style="text-align:center;color:var(--fg-muted);padding:24px;">' + esc(poolSlotsCache.length ? tr("当前筛选条件下无匹配凭证", "No matching credentials") : tr("暂无凭证", "No credentials")) + '</td></tr>';
     }
+
+    window.editAccountLimits = async (slotId) => {
+      const slot = poolSlotsCache.find((s) => s.slotId === slotId);
+      if (!slot) return;
+      const maxValue = window.prompt(tr("此账号的最大并发数（1–100）", "Account concurrency (1–100)"), String(slot.maxConcurrent || 2));
+      if (maxValue === null) return;
+      const weightValue = window.prompt(tr("调度权重（1–100）", "Scheduling weight (1–100)"), String(slot.weight || 1));
+      if (weightValue === null) return;
+      const maxConcurrent = Number(maxValue), weight = Number(weightValue);
+      if (![maxConcurrent, weight].every((n) => Number.isInteger(n) && n >= 1 && n <= 100)) return notify(tr("请输入 1–100 的整数", "Enter integers from 1 to 100"), true);
+      try {
+        await api("/v1/admin/keys/" + slotId, { method: "PATCH", body: JSON.stringify({ maxConcurrent, weight }) });
+        await loadConsoleData();
+        notify(tr("账号并发与权重已保存", "Account limits saved"));
+      } catch (e) { notify(e.message, true); }
+    };
 
     window.toggleCredSelect = (slotId, checked) => {
       if (checked) selectedCredIds.add(slotId);
@@ -3286,6 +3312,7 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
           '<td>' + limitHtml + '</td>' +
           '<td class="mono" style="font-size:11.5px;"><div>' + esc(tr('入 ', 'In ')) + fmtTok(st.inputTokens) + esc(tr(' / 出 ', ' / Out ')) + fmtTok(st.outputTokens) + '</div><div style="color:var(--fg-muted);">' + esc(lastTime) + '</div></td>' +
           '<td class="ops-cell"><div class="ops-stack">' +
+            '<button class="btn-xs" data-click="editAccountLimits" data-arg="' + esc(s.slotId) + '">' + esc(tr('并发 / 权重', 'Limits / weight')) + '</button>' +
             '<button class="btn-xs" data-click="selectCkForConnect" data-arg="' + esc(k.id) + '">' + esc(tr('接入', 'Connect')) + '</button>' +
             '<button class="btn-xs" data-click="openEditCkModal" data-arg="' + esc(k.id) + '">' + esc(tr('编辑配置', 'Edit')) + '</button>' +
             (k.maxRequests != null && st.requests > 0 ? '<button class="btn-xs" data-click="resetCkUsedCount" data-arg="' + esc(k.id) + '">' + esc(tr('重置次数', 'Reset')) + '</button>' : '') +
@@ -4143,6 +4170,7 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
           method: "POST",
           body: JSON.stringify({
             lbStrategy: $("cfgLbStrategy").value,
+            accountMaxConcurrent: Number($("cfgAccountMaxConcurrent").value),
             sessionAffinityEnabled: $("cfgAffinityEnabled").checked,
             sessionAffinityTtlSeconds: Number($("cfgAffinityTtl").value) || 3600,
             autoDisableExhaustedKeys: $("cfgAutoDisable").checked,

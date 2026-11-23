@@ -1,3 +1,4 @@
+import type { RequestAdmission } from "../core/request-admission.js";
 import crypto from "node:crypto";
 import type http from "node:http";
 import {
@@ -30,6 +31,7 @@ import { renderDashboardHtml } from "./dashboard-ui.js";
 
 export interface WebAdminContext {
   config: GatewayConfig;
+  admission?: RequestAdmission;
   adminAuth: AdminAuthManager;
   engine: QuickExecutionEngine;
   keyPool: UpstreamKeyPool;
@@ -198,7 +200,7 @@ export async function tryHandleWebAdminRoute(
       object: "gateway.usage",
       ...usageTracker.snapshot(),
       settings: keyPool.getSettings(),
-      runtime: engine.runtimeStats(),
+      runtime: { ...engine.runtimeStats(), admission: ctx.admission?.snapshot() },
       keyPool: keyPool.statusSnapshot(),
       affinities: keyPool.affinitySnapshot()
     });
@@ -224,7 +226,7 @@ export async function tryHandleWebAdminRoute(
       object: "aws_quick.quota",
       accounts,
       settings: keyPool.getSettings(),
-      runtime: engine.runtimeStats(),
+      runtime: { ...engine.runtimeStats(), admission: ctx.admission?.snapshot() },
       keyPool: keyPool.statusSnapshot(),
       affinities: keyPool.affinitySnapshot(),
       gatewaySessionUsage: usageTracker.snapshot()
@@ -244,6 +246,7 @@ export async function tryHandleWebAdminRoute(
     const body = await readJsonBody(req, config.maxBodyBytes);
     if (!isRecord(body)) throw new GatewayError("JSON object expected.", 400, "invalid_request_error");
     const patch: Partial<PoolRoutingSettings> = {};
+    if (typeof body.accountMaxConcurrent === "number") patch.accountMaxConcurrent = body.accountMaxConcurrent;
     if (body.lbStrategy === "quota-aware" || body.lbStrategy === "least-busy" || body.lbStrategy === "round-robin") {
       patch.lbStrategy = body.lbStrategy;
     }
@@ -736,7 +739,9 @@ export async function tryHandleWebAdminRoute(
         ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
         ...(typeof body.label === "string" ? { label: body.label } : {}),
         ...(typeof body.proxyUrl === "string" ? { proxyUrl: body.proxyUrl } : {}),
-        ...(body.clearCooldown === true ? { clearCooldown: true } : {})
+        ...(body.clearCooldown === true ? { clearCooldown: true } : {}),
+        ...(typeof body.maxConcurrent === "number" ? { maxConcurrent: body.maxConcurrent } : {}),
+        ...(typeof body.weight === "number" ? { weight: body.weight } : {})
       });
       sendJson(res, 200, { ok: true, keyPool: keyPool.statusSnapshot() });
       return true;

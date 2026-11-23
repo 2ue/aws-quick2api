@@ -1,3 +1,6 @@
+import type { ParsedProtocolTurn } from "./core/types.js";
+import { RequestAdmission, explicitSessionKey } from "./core/request-admission.js";
+import { resolveModelRoute } from "./services/model-router.js";
 import http from "node:http";
 import { fileURLToPath } from "node:url";
 import type { SDKModel } from "./aws-quick/types.js";
@@ -33,6 +36,7 @@ export interface GatewayServerOptions {
   config: GatewayConfig;
   agentFactory?: AgentFactory;
   modelListFetcher?: (apiKey: string) => Promise<SDKModel[]>;
+  turnExecutor?: (turn: ParsedProtocolTurn, pool: UpstreamKeyPool) => AsyncGenerator<GatewayStreamEvent, void, unknown>;
   quotaHttpFetcher?: typeof fetch;
   sessionRpcFetcher?: typeof fetch;
   meFetcher?: NonNullable<Parameters<typeof fetchAllAccountQuotas>[1]>["meFetcher"];
@@ -47,6 +51,7 @@ export interface GatewayServerInstance {
   usageTracker: UsageTracker;
   usageLedger: UsageLedger;
   traceLogger: RequestTraceLogger;
+  admission: RequestAdmission;
   close: () => Promise<void>;
 }
 
@@ -356,22 +361,6 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     modelListFetcher: options.modelListFetcher
   });
 
-  /** Reject unknown base model ids with 404 before any account-pool / spend-guard logic runs. Does not touch pool scheduling state. */
-  async function assertModelExists(requestedModel: string): Promise<void> {
-    const baseId = normalizeBaseModelId(requestedModel || "auto");
-    if (!baseId || baseId === "auto" || baseId === "default") return;
-    const probeKey = keyPool.allManagedKeys().find((k) => k.enabled)?.rawKey;
-    if (!probeKey) return;
-    let catalog: Awaited<ReturnType<typeof listLiveModels>>;
-    try {
-      catalog = await listLiveModels(probeKey, options.modelListFetcher);
-    } catch {
-      return;
-    }
-    if (!catalog.some((m) => m.id.toLowerCase() === baseId)) {
-      throw new GatewayError(`Model '${requestedModel}' not found.`, 404, "model_not_found", "model");
-    }
-  }
 
   async function* tapStreamWithTrace(
     events: AsyncGenerator<GatewayStreamEvent, void, unknown>,
@@ -518,7 +507,10 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
   // Upstream quota is only ever fetched on an explicit admin action (console "sync" button, adding a key,
   // re-check). No timer and no startup sync: repeated automatic calls risk tripping upstream abuse controls.
 
-  const activeByClientKey = new Map<string, number>();
+  const admission = new RequestAdmission({ maxConcurrent: config.globalMaxConcurrent ?? 20,
+    maxQueued: config.maxQueuedRequests ?? 200, waitTimeoutMs: config.queueWaitTimeoutMs ?? 30000 });
+  const sessionAdmission = new RequestAdmission({ maxConcurrent: config.globalMaxConcurrent ?? 20,
+    maxQueued: config.globalMaxConcurrent ?? 20, waitTimeoutMs: config.queueWaitTimeoutMs ?? 30000 });
   const server = http.createServer({ maxHeaderSize: 16_384 }, async (req, res) => {
     const route = normalizeRoutePath(req.url);
     const adminSurface = isAdminSurfaceRoute(route, config.dashboardPath);
@@ -549,6 +541,10 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       || route === "/messages/count_tokens";
 
     const abortController = new AbortController();
+    const requestDeadline = setTimeout(() => abortController.abort(new Error("Gateway request deadline exceeded")), config.runMaxTimeoutMs);
+    const clearDeadline = () => clearTimeout(requestDeadline);
+    res.once("finish", clearDeadline);
+    res.once("close", clearDeadline);
     req.on("aborted", () => abortController.abort(new Error("Client aborted HTTP request")));
     res.on("close", () => {
       if (!res.writableEnded) {
@@ -592,6 +588,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
           usageTracker,
           usageLedger,
           traceLogger,
+          admission,
           modelListFetcher: options.modelListFetcher,
           sessionRpcFetcher: options.sessionRpcFetcher,
           onDemandFetcher: options.quotaHttpFetcher,
@@ -659,7 +656,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         const body = await readJsonBody(req, res, Math.min(config.maxBodyBytes, 4 * 1024 * 1024));
         if (clientAuth.kind === "gateway_key") {
           const limit = clientKeys.concurrencyLimitFor(clientAuth.keyId, config.clientKeyMaxConcurrent);
-          if (limit > 0 && (activeByClientKey.get(clientAuth.keyId) ?? 0) >= limit) {
+          if (limit > 0 && admission.activeForKey(clientAuth.keyId) >= limit) {
             throw Object.assign(
               new GatewayError(`Too many concurrent requests for this API key (limit ${limit}).`, 429, "concurrency_limit_exceeded"),
               { retryAfter: 2 }
@@ -673,90 +670,75 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       // 5. Standard Protocol Layer: OpenAI Chat, OpenAI Responses & Anthropic Messages
       if (protocolEntry && protocolAdapter && req.method === "POST") {
         const clientAuth = authenticateProtocolClient(req, { checkQuotaCap: true });
-        const body = await readJsonBody(req, res, config.maxBodyBytes);
-        const turn = protocolAdapter.parse(body, req.headers, abortController.signal);
         const clientKeyId = clientAuth.kind === "gateway_key" ? clientAuth.keyId : undefined;
-        turn.scope = clientKeyId ?? "master";
-        if (turn.conversationKey) turn.conversationKey = `${turn.scope}:${turn.conversationKey}`;
         const concurrencyLimit = clientKeyId ? clientKeys.concurrencyLimitFor(clientKeyId, config.clientKeyMaxConcurrent) : 0;
-        if (clientKeyId && concurrencyLimit > 0) {
-          const active = activeByClientKey.get(clientKeyId) ?? 0;
-          if (active >= concurrencyLimit) {
-            throw Object.assign(
-              new GatewayError(
-                `Too many concurrent requests for this API key (limit ${concurrencyLimit}).`,
-                429,
-                "concurrency_limit_exceeded"
-              ),
-              { retryAfter: 2 }
-            );
-          }
-          activeByClientKey.set(clientKeyId, active + 1);
-          let released = false;
-          const release = () => {
-            if (released) return;
-            released = true;
-            const n = (activeByClientKey.get(clientKeyId) ?? 1) - 1;
-            if (n <= 0) activeByClientKey.delete(clientKeyId);
-            else activeByClientKey.set(clientKeyId, n);
-          };
-          res.once("close", release);
-          res.once("finish", release);
-        }
-        const ua = sanitizeUserAgent(req.headers["user-agent"]);
-        const recordedIp = config.recordClientIp !== false ? clientIpOf(req, config.trustProxy) : "";
-        const traceId = config.enableDashboard
-          ? traceLogger.startTrace(protocolEntry.tag, turn, { keyId: clientKeyId, keyName: clientAuth.keyName, clientIp: recordedIp, userAgent: ua })
-          : null;
+        const releaseAdmission = await admission.acquire({ clientKey: clientKeyId ?? "master", clientLimit: concurrencyLimit,
+          signal: abortController.signal });
+        let releaseSession: (() => void) | undefined;
         try {
-          modelAccess.assertModelAllowed(turn.requestedModel);
-          clientKeys.assertModelPermitted(clientAuth, turn.requestedModel);
-          await assertModelExists(turn.requestedModel);
-          clientKeys.tryReserveRequest(clientKeyId);
-        } catch (err) {
-          const gwErr = mapSdkError(err);
-          traceLogger.finishError(traceId, gwErr.status, gwErr.message);
-          throw gwErr;
-        }
-        const ledgerMeta = { account: "", execMode: "", usedProxy: false, startedAt: Date.now() };
-        const rawEvents = engine.executeTurnWithPool(turn, keyPool, (meta) => {
-          traceLogger.bindExecutionMeta(traceId, meta);
-          ledgerMeta.account = meta.accountLabel || meta.maskedKey;
-          ledgerMeta.execMode = meta.execMode;
-          ledgerMeta.usedProxy = Boolean(meta.usedProxy);
-        });
-        const events = tapStreamWithLedger(
-          tapStreamWithTrace(rawEvents, traceId, clientKeyId),
-          {
-            model: turn.requestedModel,
-            key: clientAuth.keyName || "master",
-            ip: recordedIp,
-            ua,
-            protocol: protocolEntry.tag,
-            stream: Boolean(turn.stream),
-            meta: ledgerMeta
+          const body = await readJsonBody(req, res, config.maxBodyBytes);
+          const turn = protocolAdapter.parse(body, req.headers, abortController.signal);
+          turn.modelRoute = resolveModelRoute(turn.requestedModel, turn.rawBody, process.env.ENABLE_ADVANCED_MODEL === "true");
+          turn.scope = clientKeyId ?? "master";
+          if (turn.conversationKey) turn.conversationKey = `${turn.scope}:${turn.modelRoute.canonicalModel}:${turn.modelRoute.thinkingEffort}:${turn.conversationKey}`;
+          modelAccess.assertModelAllowed(turn.modelRoute.canonicalModel);
+          clientKeys.assertModelPermitted(clientAuth, turn.modelRoute.canonicalModel);
+          const sessionId = explicitSessionKey(req.headers, turn.rawBody);
+          if (sessionId) releaseSession = await sessionAdmission.acquire({ clientKey: turn.scope, clientLimit: 0,
+            sessionKey: `${turn.scope}:${sessionId}`, signal: turn.signal });
+          const ua = sanitizeUserAgent(req.headers["user-agent"]);
+          const recordedIp = config.recordClientIp !== false ? clientIpOf(req, config.trustProxy) : "";
+          const traceId = config.enableDashboard
+            ? traceLogger.startTrace(protocolEntry.tag, turn, { keyId: clientKeyId, keyName: clientAuth.keyName, clientIp: recordedIp, userAgent: ua })
+            : null;
+          try {
+            clientKeys.tryReserveRequest(clientKeyId);
+          } catch (err) {
+            const gwErr = mapSdkError(err);
+            traceLogger.finishError(traceId, gwErr.status, gwErr.message);
+            throw gwErr;
           }
-        );
-
-        if (turn.stream) {
-          const approxPayloadBytes =
-            Buffer.byteLength(turn.fullTranscriptText || "", "utf8") +
-            Buffer.byteLength(turn.systemPrompt || "", "utf8") +
-            (turn.tools.length > 0 ? Buffer.byteLength(JSON.stringify(turn.tools), "utf8") : 0);
-          const flushEarly =
-            keyPool.enabledKeyCount() > 0 && approxPayloadBytes > SSE_EARLY_FLUSH_BYTES;
-          await pipeSseStream(
-            res,
-            protocolAdapter.streamSse(events, turn),
-            (err) => protocolAdapter.formatSseErrorFrame(err),
-            ignoredParamsHeader(turn.rawBody),
-            { flushEarly }
+          const routeHeaders = { "X-Quick-Agent-Mode": turn.modelRoute.agentMode, "X-Quick-Thinking-Effort": turn.modelRoute.thinkingEffort, ...(turn.modelRoute.normalizations.length ? { "X-Quick-Normalized": turn.modelRoute.normalizations.join(", ") } : {}) };
+          const ledgerMeta = { account: "", execMode: "", usedProxy: false, startedAt: Date.now() };
+          const rawEvents = options.turnExecutor ? options.turnExecutor(turn, keyPool) : engine.executeTurnWithPool(turn, keyPool, (meta) => {
+            traceLogger.bindExecutionMeta(traceId, meta);
+            ledgerMeta.account = meta.accountLabel || meta.maskedKey;
+            ledgerMeta.execMode = meta.execMode;
+            ledgerMeta.usedProxy = Boolean(meta.usedProxy);
+          });
+          const events = tapStreamWithLedger(
+            tapStreamWithTrace(rawEvents, traceId, clientKeyId),
+            {
+              model: turn.requestedModel,
+              key: clientAuth.keyName || "master",
+              ip: recordedIp,
+              ua,
+              protocol: protocolEntry.tag,
+              stream: Boolean(turn.stream),
+              meta: ledgerMeta
+            }
           );
-        } else {
-          const json = await protocolAdapter.collectJson(events, turn);
-          sendJson(res, 200, json, { allowCors: true, extraHeaders: ignoredParamsHeader(turn.rawBody) });
-        }
-        return;
+
+          if (turn.stream) {
+            const approxPayloadBytes =
+              Buffer.byteLength(turn.fullTranscriptText || "", "utf8") +
+              Buffer.byteLength(turn.systemPrompt || "", "utf8") +
+              (turn.tools.length > 0 ? Buffer.byteLength(JSON.stringify(turn.tools), "utf8") : 0);
+            const flushEarly =
+              keyPool.enabledKeyCount() > 0 && approxPayloadBytes > SSE_EARLY_FLUSH_BYTES;
+            await pipeSseStream(
+              res,
+              protocolAdapter.streamSse(events, turn),
+              (err) => protocolAdapter.formatSseErrorFrame(err),
+              { ...ignoredParamsHeader(turn.rawBody), ...routeHeaders },
+              { flushEarly }
+            );
+          } else {
+            const json = await protocolAdapter.collectJson(events, turn);
+            sendJson(res, 200, json, { allowCors: true, extraHeaders: { ...ignoredParamsHeader(turn.rawBody), ...routeHeaders } });
+          }
+          return;
+        } finally { releaseSession?.(); releaseAdmission(); }
       }
 
       const allow = isModelsRoute
@@ -807,7 +789,11 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     usageTracker,
     usageLedger,
     traceLogger,
+    admission,
     close: async () => {
+      admission.close();
+      sessionAdmission.close();
+      keyPool.close();
       closeAllOAuthServers();
       await engine.disposeAll();
       server.closeAllConnections?.();

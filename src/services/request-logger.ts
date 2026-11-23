@@ -25,6 +25,10 @@ export interface RequestTraceSummary {
   protocol: RequestProtocolTag;
   stream: boolean;
   requestedModel: string;
+  canonicalModel?: string;
+  agentMode?: string;
+  thinkingEffort?: string;
+  normalizations?: string[];
   clientKeyId?: string;
   clientKeyName?: string;
   clientIp?: string;
@@ -118,6 +122,7 @@ export class RequestTraceLogger {
       protocol,
       stream: turn.stream,
       requestedModel: turn.requestedModel,
+      ...(turn.modelRoute ? { canonicalModel: turn.modelRoute.canonicalModel, agentMode: turn.modelRoute.agentMode, thinkingEffort: turn.modelRoute.thinkingEffort, normalizations: turn.modelRoute.normalizations } : {}),
       ...(clientKeyMeta?.keyId ? { clientKeyId: clientKeyMeta.keyId } : {}),
       ...(clientKeyMeta?.keyName ? { clientKeyName: clientKeyMeta.keyName } : {}),
       ...(clientKeyMeta?.clientIp ? { clientIp: clientKeyMeta.clientIp } : {}),

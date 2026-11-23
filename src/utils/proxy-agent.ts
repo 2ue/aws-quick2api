@@ -379,7 +379,7 @@ function isTransientProxyNetworkError(err: unknown): boolean {
 function doProxiedHttpsRequest(
   u: URL,
   agent: https.Agent | undefined,
-  init: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
+  init: { method?: string; headers?: Record<string, string>; body?: string | Uint8Array; signal?: AbortSignal },
 ): Promise<{ ok: boolean; status: number; text: () => Promise<string>; json: () => Promise<unknown> }> {
   return new Promise((resolve, reject) => {
     const req = https.request(
@@ -425,13 +425,13 @@ function doProxiedHttpsRequest(
  */
 export async function fetchViaOptionalProxy(
   url: string,
-  init: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
+  init: { method?: string; headers?: Record<string, string>; body?: string | Uint8Array; signal?: AbortSignal },
   proxyUrl?: string,
   options?: { maxRetries?: number; retryDelayMs?: number },
 ): Promise<{ ok: boolean; status: number; text: () => Promise<string>; json: () => Promise<unknown> }> {
   const effectiveProxy = (proxyUrl || "").trim();
   if (!effectiveProxy) {
-    return fetch(url, init);
+    return fetch(url, { ...init, body: init.body instanceof Uint8Array ? new Uint8Array(init.body) : init.body });
   }
   const u = new URL(url);
   const agent = getProxyAgent(effectiveProxy);
