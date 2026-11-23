@@ -1,14 +1,14 @@
 # 状态
 
-Current Phase：resume → execute-ready，工具与 MCP 兼容性复测。
+Current Phase：工具与 MCP 复测、协议修复完成；最新镜像发布核验中。
 
-Next Target：支持 JSON Schema draft/2020-12，验证真实 Claude Code 内置工具与 MCP；保持个人 CLI 配置不变。
+Next Target：远端发布最终修复镜像，核验内置工具和延迟 MCP。
 
 Last Landed：2026-11-23，87 已运行改造版；原地址和账密保留。
 
-Active TODO：schema 方言修复、自动工具及 MCP 发现/回传验证、候选验证与远端更新。
+Active TODO：最终镜像更新与线上短验。
 
-Last Verified：38 项测试通过；候选三协议、五型号、工具回传、原图识别、2/4 路真实请求通过；更新后公网模型列表和对话通过。
+Last Verified：44 项测试与 preflight 通过；真实 stdio / HTTP 延迟 MCP、Sonnet 精简工具、Opus 完整工具、24 次并发会话标记请求。结果和失败样本见[兼容性记录](../../../tool-compatibility.md)。
 
 证据：87 `/root/docker-compose/aws-quick-comparison/enhanced-deployment.json` 与 `enhanced-smoke-59162.json`、`enhanced-smoke-59158.json`。
 
