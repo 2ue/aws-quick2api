@@ -40,3 +40,10 @@
 ## 隔离测试方式
 
 测试使用独立 CLAUDE_CONFIG_DIR、空 setting-sources、strict-mcp-config 和临时 MCP 服务。不写个人 settings、认证或 MCP 配置，不连接个人 MCP。比较测试前后个人配置文件哈希；诊断脚本、日志和样例文件放在仓库外的测试输出目录。
+
+
+## Client file creation and Quick artifacts
+
+For external coding clients, a generated file must be created by a declared client file-writing tool. An AWS Quick `qw-file://` artifact URL refers to Quick's internal workspace and does not establish that a file exists in the caller's workspace. The tool bridge reinforces this distinction in custom instructions and in each turn's reminder: place complete file content in the selected tool arguments, stop for the client tool result, and report the confirmed path afterward. A dedicated file-writing tool is preferred over a shell or patch fallback. This applies to HTML/SVG animations and other generated files, without requiring source code to be returned in the assistant's normal text.
+
+This follow-up changes tool-routing instructions; it does not fetch a previous Quick artifact or synthesize a completed tool result. It requires the calling application to provide appropriate tools and execute returned calls. No new tests or live model/CLI tests were run for this follow-up, as requested.

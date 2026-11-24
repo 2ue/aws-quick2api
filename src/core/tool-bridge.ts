@@ -105,6 +105,9 @@ export function buildToolBridgePrompt(
     "## Client Tool Action Format",
     "The external client runner executes the tool actions listed below and returns their real results. This client tool catalog is independent of Quick's internal tools and connected sources. Use this bridge for client actions; a missing Quick connector does not mean a client MCP tool is unavailable.",
     "To invoke a client action, output a structured `<tool_call>` JSON block. Do not merely explain how the user could perform the action. Never fabricate tool outputs; wait for the runner's tool result before reporting completion.",
+    "## Required Client Workspace File Actions",
+    "When the user asks you to create, write, edit, save, or generate a file, you MUST invoke a file-writing action declared in the client runner tools below. Prefer a dedicated write/create/edit tool; use a listed shell or patch tool only when no suitable dedicated file tool is available. Put the complete requested file contents in the tool call arguments, then stop and wait for the real tool result before reporting completion.",
+    "The AWS Quick internal workspace and its native artifact feature are not the caller's workspace. Never create a Quick artifact for a client file request, never return a `qw-file://` URI or another inaccessible workspace URI, and never substitute an artifact link or a description of the file for the client tool call. When a client file-writing tool is available, do not put the file contents in the assistant response; write the file through the client tool and report only the confirmed path after its result arrives.",
     ...(tools.some((tool) => tool.name === "ToolSearch") ? [
       "For deferred tools, first invoke ToolSearch with query=\"select:<exact_tool_name>\" and max_results=5. Names in the client's deferred-tool catalog are available through that runner even if Quick has no corresponding connector. After ToolSearch returns the schema, invoke the discovered action and continue the task; discovery alone does not complete the requested operation.",
     ] : []),
@@ -122,6 +125,7 @@ export function buildClientToolReminder(tools: readonly NormalizedTool[], choice
     "[External client runner]",
     "The user's workspace and MCP servers belong to the external client, not the Quick cloud workspace. Use the client actions declared in the custom instructions for this task. Quick's files, sandbox, or connector inventory cannot establish whether the client's files or MCP servers exist.",
     `Callable client actions: ${tools.map((tool) => tool.name).join(", ")}.`,
+    "File creation is a client-workspace action: if the request asks to create, write, edit, save, or generate a file, immediately call a declared client file-writing tool with the requested content. Do not use Quick's internal artifact feature, return a qw-file:// link, or answer with the file contents instead of the tool call. Wait for the tool result before confirming the path.",
     ...(tools.some((tool) => tool.name === "ToolSearch") ? ["Use ToolSearch to load deferred client tools before invoking them."] : []),
     'Invoke through <tool_call>{"name":"<declared_action>","arguments":{...}}</tool_call> and stop for the real result. Do the requested actions rather than giving instructions; never invent a result.',
   ].join("\n");

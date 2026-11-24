@@ -23,3 +23,6 @@ Last Verified：49 项测试与 preflight；生产浏览器密钥列表、21 行
 上述思考入口和路由说明问题已修复。思考显示默认关闭；真实日志仍可观测到上游思考事件。生产更新证据补充在 87 comparison 目录的 tool-thinking-deployment.json。
 
 访问密钥页面曾混入账号专用并发按钮，引用未定义 s.slotId；已移除并补 populated renderer 回归。生产已实际验证密钥与接入示例恢复，21 个账号数据未丢失。
+
+
+2026-11-24 follow-up: a client file request returned an AWS Quick `qw-file://workspace/artifacts/...` link instead of invoking the external client's file-writing tool. The tool bridge now explicitly routes file creation/edit/save requests through declared client tools in both custom instructions and per-turn reminders. File content belongs in tool arguments; completion requires the real client result. This follow-up intentionally does not add or run tests, per the request. Build and container health are checked separately.
