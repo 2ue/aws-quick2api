@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { AutoDisabledState, GatewayConfig, LbStrategy } from "./types.js";
+import type { AccountCooldownState, AutoDisabledState, GatewayConfig, LbStrategy } from "./types.js";
 
 export function loadDotEnv(explicitPath?: string): string | undefined {
   const candidates = [
@@ -79,6 +79,16 @@ function parseKeyAutoDisabled(raw: string | undefined): Record<string, AutoDisab
   }
 }
 
+function parseKeyCooldowns(raw: string | undefined): Record<string, AccountCooldownState> {
+  try {
+    const value = JSON.parse(raw || "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter(([key, v]) => !["__proto__", "constructor", "prototype"].includes(key) &&
+      v && typeof v === "object" && typeof (v as AccountCooldownState).untilMs === "number" && Number.isFinite((v as AccountCooldownState).untilMs))
+      .map(([key, v]) => [key, { untilMs: (v as AccountCooldownState).untilMs, reason: typeof (v as AccountCooldownState).reason === "string" ? (v as AccountCooldownState).reason.slice(0, 160) : "Temporary usage limit" }]));
+  } catch { return {}; }
+}
+
 function parseKeyLabels(raw: string | undefined): Record<string, string> {
   if (!raw) return {};
   try {
@@ -145,7 +155,7 @@ export function loadConfigFromEnv(
 ): GatewayConfig {
   const settingsPath = envFilePath || env.ENV_FILE_PATH?.trim();
   // Console changes must survive a restart with Docker's original env_file snapshot.
-  const persistedNames = new Set(["QUICK_TOKENS", "DISABLED_QUICK_TOKENS", "KEY_LABELS", "KEY_PROXIES", "KEY_ADDED_AT", "KEY_AUTO_DISABLED",
+  const persistedNames = new Set(["QUICK_TOKENS", "DISABLED_QUICK_TOKENS", "KEY_LABELS", "KEY_PROXIES", "KEY_ADDED_AT", "KEY_AUTO_DISABLED", "KEY_COOLDOWNS", "TEMPORARY_LIMIT_COOLDOWN_SECONDS",
     "LB_STRATEGY", "ACCOUNT_MAX_CONCURRENT", "KEY_CONCURRENCY_LIMITS", "KEY_WEIGHTS", "SESSION_AFFINITY_ENABLED", "SESSION_AFFINITY_TTL_MS",
     "AUTO_DISABLE_EXHAUSTED_KEYS", "INCOGNITO", "SHOW_THINKING_CONTENT", "DISABLED_MODELS", "ADMIN_PASSWORD"]);
   if (settingsPath && existsSync(settingsPath)) {
@@ -203,6 +213,8 @@ export function loadConfigFromEnv(
     keyProxies: parseKeyLabels(env.KEY_PROXIES),
     keyAddedAt: parseKeyAddedAt(env.KEY_ADDED_AT),
     keyAutoDisabled: parseKeyAutoDisabled(env.KEY_AUTO_DISABLED),
+    keyCooldowns: parseKeyCooldowns(env.KEY_COOLDOWNS),
+    temporaryLimitCooldownSeconds: Math.min(86400, Math.max(1, parseIntEnv(env.TEMPORARY_LIMIT_COOLDOWN_SECONDS, 300))),
     lbStrategy: parseLbStrategy(env.LB_STRATEGY),
     sessionAffinityEnabled: parseBoolEnv(env.SESSION_AFFINITY_ENABLED, true),
     sessionAffinityTtlMs: parseIntEnv(env.SESSION_AFFINITY_TTL_MS, 60 * 60 * 1000) || 60 * 60 * 1000,
@@ -268,6 +280,8 @@ export function persistPoolConfigToEnvFile(
     keyProxies?: Record<string, string>;
     keyAddedAt?: Record<string, number>;
     keyAutoDisabled: Record<string, AutoDisabledState>;
+    keyCooldowns?: Record<string, AccountCooldownState>;
+    temporaryLimitCooldownSeconds?: number;
     lbStrategy: LbStrategy;
     sessionAffinityEnabled: boolean;
     sessionAffinityTtlMs: number;
@@ -287,6 +301,8 @@ export function persistPoolConfigToEnvFile(
     ...(state.keyProxies ? { KEY_PROXIES: stripEnvNewlines(JSON.stringify(state.keyProxies)) } : {}),
     ...(state.keyAddedAt ? { KEY_ADDED_AT: stripEnvNewlines(JSON.stringify(state.keyAddedAt)) } : {}),
     KEY_AUTO_DISABLED: stripEnvNewlines(JSON.stringify(state.keyAutoDisabled)),
+    ...(state.keyCooldowns ? { KEY_COOLDOWNS: JSON.stringify(state.keyCooldowns) } : {}),
+    ...(state.temporaryLimitCooldownSeconds !== undefined ? { TEMPORARY_LIMIT_COOLDOWN_SECONDS: String(state.temporaryLimitCooldownSeconds) } : {}),
     LB_STRATEGY: state.lbStrategy,
     ...(state.accountMaxConcurrent ? { ACCOUNT_MAX_CONCURRENT: String(state.accountMaxConcurrent) } : {}),
     ...(state.keyConcurrencyLimits ? { KEY_CONCURRENCY_LIMITS: JSON.stringify(state.keyConcurrencyLimits) } : {}),

@@ -3,13 +3,15 @@ export class GatewayError extends Error {
   readonly status: number;
   readonly code: string;
   readonly param?: string;
+  readonly upstreamRetryAtMs?: number;
 
-  constructor(message: string, status = 500, code = "internal_error", param?: string) {
+  constructor(message: string, status = 500, code = "internal_error", param?: string, recovery?: { retryAtMs?: number }) {
     super(message);
     this.name = "GatewayError";
     this.status = status;
     this.code = code;
     this.param = param;
+    this.upstreamRetryAtMs = recovery?.retryAtMs;
   }
 }
 
@@ -113,6 +115,11 @@ export interface AutoDisabledState {
   resetAtMs?: number;
 }
 
+export interface AccountCooldownState {
+  untilMs: number;
+  reason: string;
+}
+
 export interface GatewayConfig {
   host: string;
   port: number;
@@ -138,6 +145,8 @@ export interface GatewayConfig {
   keyAddedAt?: Record<string, number>;
   /** Persisted auto-disable state per slot (`KEY_AUTO_DISABLED`), so recovery survives restarts. */
   keyAutoDisabled?: Record<string, AutoDisabledState>;
+  keyCooldowns?: Record<string, AccountCooldownState>;
+  temporaryLimitCooldownSeconds?: number;
   lbStrategy: LbStrategy;
   /** CPA-style sticky session affinity so multi-turn conversations stay on the same account. */
   sessionAffinityEnabled: boolean;

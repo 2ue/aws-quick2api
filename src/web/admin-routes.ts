@@ -247,6 +247,12 @@ export async function tryHandleWebAdminRoute(
     const body = await readJsonBody(req, config.maxBodyBytes);
     if (!isRecord(body)) throw new GatewayError("JSON object expected.", 400, "invalid_request_error");
     const patch: Partial<PoolRoutingSettings> = {};
+    if (body.temporaryLimitCooldownSeconds !== undefined) {
+      if (typeof body.temporaryLimitCooldownSeconds !== "number" || !Number.isInteger(body.temporaryLimitCooldownSeconds) || body.temporaryLimitCooldownSeconds < 1 || body.temporaryLimitCooldownSeconds > 86400) {
+        throw new GatewayError("Temporary cooldown must be an integer between 1 and 86400 seconds.", 400, "invalid_cooldown");
+      }
+      patch.temporaryLimitCooldownSeconds = body.temporaryLimitCooldownSeconds;
+    }
     if (typeof body.accountMaxConcurrent === "number") patch.accountMaxConcurrent = body.accountMaxConcurrent;
     if (body.lbStrategy === "quota-aware" || body.lbStrategy === "least-busy" || body.lbStrategy === "round-robin") {
       patch.lbStrategy = body.lbStrategy;

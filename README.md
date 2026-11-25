@@ -168,6 +168,7 @@ docker compose pull && docker compose up -d
 | `ENABLE_DASHBOARD` | `true` | 是否启用 Web 管理台（`false` 关闭全部管理台路由） |
 | `ADMIN_PASSWORD` | - | 管理台密码（公网部署必填；留空时仅允许 `127.0.0.1`/`::1` 初始化） |
 | `QUICK_TOKENS` | `local-outpost` | 上游凭证（也可启动后直接在管理台用 OAuth 或 Cookie 添加） |
+| `TEMPORARY_LIMIT_COOLDOWN_SECONDS` | `300` | 临时 usage limit / 429 的默认冷却秒数，范围 1–86400；管理台可热改，上游明确恢复时间优先 |
 | `DISABLED_MODELS` | - | 需隐藏的模型 ID，逗号分隔（Free 账号建议填 `quick-advanced`） |
 | `INCOGNITO` | `true` | 原生无痕模式，不落云端历史（管理台支持热切换） |
 | `AUTO_DELETE_SESSION` | `false` | 无痕模式下回合结束后是否额外发 `session_delete`（默认关闭） |

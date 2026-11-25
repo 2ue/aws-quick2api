@@ -45,6 +45,7 @@ Haiku / fast 当前归一化为 off；本次未声明其支持思考。Quick 只
 LB_STRATEGY=quota-aware
 SESSION_AFFINITY_ENABLED=true
 ACCOUNT_MAX_CONCURRENT=2
+TEMPORARY_LIMIT_COOLDOWN_SECONDS=300
 GLOBAL_MAX_CONCURRENT=20
 CLIENT_KEY_MAX_CONCURRENT=20
 MAX_QUEUED_REQUESTS=200
@@ -67,6 +68,26 @@ Content-Type: application/json
 ```
 
 `KEY_CONCURRENCY_LIMITS` 与 `KEY_WEIGHTS` 由系统持久化到 `.env`，键为稳定账号 slotId。默认限制通过 `POST /v1/admin/settings` 的 `accountMaxConcurrent` 设置。
+
+## 临时限制、冷却与额度恢复
+
+通用 `You've reached your usage limit. Check your profile for details.`、429、rate limit 和并发限制归为临时限制。账号保持启用，从调度候选中暂时移除，解除会话亲和性；尚未输出真实内容的请求使用同一模型、原始任务换号重试，每次请求最多尝试五个账号。不会把限额提示作为正常答案返回。已输出正文、真实思考或工具调用后不重新执行请求。
+
+管理台「路由配置 → 临时限制冷却（秒）」可热改默认值，范围 1–86400 秒，默认300秒；也可设置环境变量 `TEMPORARY_LIMIT_COOLDOWN_SECONDS`。管理接口示例：
+
+```http
+POST /v1/admin/settings
+Authorization: Bearer <ADMIN_PASSWORD>
+Content-Type: application/json
+
+{"temporaryLimitCooldownSeconds":300}
+```
+
+上游明确的 `retry_after`、`Retry-After`、重置时间戳或带时区的恢复时间优先于默认秒数。已有更长冷却不会被较短时间覆盖。配置调整适用于后续触发，现有冷却保持原到期时间。`KEY_COOLDOWNS` 持久化每个账号的到期时间和原因，重启不会提前解封；到期在下一次调度或状态读取时自动恢复。凭证列表与 `/v1/usage` 的 `keyPool` 返回 `cooldownRemainingMs`、`cooldownUntil`、`cooldownReason`。全部账号冷却时有界等待，超时返回429与剩余冷却时间的 `Retry-After`。
+
+短时 `sessionPool` 归零走临时冷却，已知会话窗口重置时间优先；明确月度额度/付费额度耗尽才按额度熔断，使用上游恢复时间或已知账期结束时间。无法获知重置时间时暂停一小时后允许重试探测，不永久搁置；探测仍受限会再次暂停。手动停用和认证失败不按额度时间自动启用。
+
+升级时仅迁移旧版本将通用 usage-limit 提示或 session burst 归零误判为额度停用的账号：恢复启用并先进入默认临时冷却。真实月度额度停用、认证失败和手动停用保持各自状态。
 
 ## 会话和刷新
 

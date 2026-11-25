@@ -1,5 +1,6 @@
 import { toolContract } from "./tool-contract.js";
 import { QuotaReplyGuard } from "./quota-reply-guard.js";
+import { classifyAccountLimit, retryAtFromUpstream } from "./limit-policy.js";
 import { buildClientToolReminder } from "./tool-bridge.js";
 import { uploadImageAttachment, type NativeAttachment } from "../aws-quick/attachment-upload.js";
 import { routeSelection } from "../services/model-router.js";
@@ -300,7 +301,7 @@ const DESKTOP_CAPABILITIES = {
 export function mapSdkError(err: unknown): GatewayError {
   if (err instanceof GatewayError) return err;
   const msg = redactSecrets(err instanceof Error ? err.message : String(err));
-  return new GatewayError(msg || "Unexpected AWS Quick gateway error.", 502, "upstream_error");
+  return new GatewayError(msg || "Unexpected AWS Quick gateway error.", 502, "upstream_error", undefined, { retryAtMs: retryAtFromUpstream(err) });
 }
 
 const MAX_WS_PAYLOAD_UTF8_BYTES = 50_000;
@@ -774,13 +775,9 @@ export class QuickExecutionEngine {
         const gwErr = mapSdkError(err);
         const msg = gwErr.message || "";
         const lower = msg.toLowerCase();
-        const isQuotaErr =
-          gwErr.code === "quota_exhausted" ||
-          gwErr.status === 402 ||
-          /quota|usage.?limit|limit.?exceeded|insufficient|exhausted|credits?/i.test(lower);
-        const isRateLimitErr =
-          !isQuotaErr &&
-          (gwErr.status === 429 || /rate.?limit|too many requests|throttl/i.test(lower));
+        const limit = classifyAccountLimit(gwErr);
+        const isQuotaErr = limit?.kind === "quota";
+        const isRateLimitErr = limit?.kind === "temporary";
         const isAuthErr =
           gwErr.code !== "model_not_available" &&
           (gwErr.status === 401 ||
@@ -797,8 +794,10 @@ export class QuickExecutionEngine {
             /proxy connect failed|econnrefused|econnreset|etimedout|socket hang up|unexpected server response|websocket closed \(1006\)/i.test(lower));
 
         if (isQuotaErr) {
-          keyPool.reportQuotaExhausted(lease.apiKey, turn.requestedModel, msg);
-        } else if (isRateLimitErr || isProxyOrConnErr) {
+          keyPool.reportQuotaExhausted(lease.apiKey, turn.requestedModel, msg, limit?.retryAtMs);
+        } else if (isRateLimitErr) {
+          keyPool.reportTemporaryLimit(lease.apiKey, limit?.retryAtMs, msg);
+        } else if (isProxyOrConnErr) {
           keyPool.reportRateLimit(lease.apiKey);
         } else if (isAuthErr) {
           keyPool.reportAuthFailure(lease.apiKey, msg);
@@ -1177,7 +1176,7 @@ export class QuickExecutionEngine {
           ended = true;
           push({
             type: "__error",
-            error: new GatewayError(`[${decoded.code}] ${decoded.message}`, 502, "upstream_error"),
+            error: new GatewayError(`[${decoded.code}] ${decoded.message}`, 502, decoded.code || "upstream_error", undefined, { retryAtMs: retryAtFromUpstream(decoded) }),
           });
           try {
             ws.close();
@@ -1359,6 +1358,9 @@ export class QuickExecutionEngine {
               400,
               "content_filter",
             );
+          } else if (/quota|usage.?limit|rate.?limit|throttl|too.?many.?requests|insufficient.?credit|payment.?required/.test(errCode.toLowerCase())) {
+            const status = /quota.?exhausted|insufficient.?quota|payment.?required|credits?.?exhausted/.test(errCode.toLowerCase()) ? 402 : 429;
+            gatewayErr = new GatewayError(`AWS Quick ${errCode}: ${errText || "Account limit reached"}`, status, errCode, undefined, { retryAtMs: retryAtFromUpstream(payload) });
           } else if (selection.agentMode === "advanced" && payload.turn_fatal === true) {
             gatewayErr = new GatewayError(
               "AWS Quick Advanced mode is not enabled on this account. Free-tier accounts should use quick-smart(Opus) or disable quick-advanced in Models.",
@@ -1370,6 +1372,8 @@ export class QuickExecutionEngine {
               `AWS Quick upstream error${errCode ? ` (${errCode})` : ""}: ${errText}`,
               502,
               "upstream_error",
+              undefined,
+              { retryAtMs: retryAtFromUpstream(payload) },
             );
           } else {
             gatewayErr = new GatewayError(`${evType}: ${JSON.stringify(payload)}`, 502, "upstream_error");

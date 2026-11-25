@@ -19,7 +19,7 @@ describe("Quota replies returned as successful upstream text", () => {
         const guard = new QuotaReplyGuard();
         assert.deepEqual(guard.feed(ROUTE, true), []);
         for (let i = 0; i < text.length; i += size) assert.deepEqual(guard.feed({ type: "text", text: text.slice(i, i + size) }), []);
-        assert.throws(() => guard.feed(DONE), (error: unknown) => error instanceof GatewayError && error.status === 402 && error.code === "quota_exhausted");
+        assert.throws(() => guard.feed(DONE), (error: unknown) => error instanceof GatewayError && error.status === 429 && error.code === "usage_limit_reached");
       }
     }
   });
@@ -68,7 +68,8 @@ describe("Quota replies returned as successful upstream text", () => {
       assert.equal(events.filter((e) => e.type === "thinking").length, 1);
       assert.equal(JSON.stringify(turn.rawBody), before);
       const state = pool.statusSnapshot();
-      assert.equal(state.filter((s) => !s.enabled && s.autoDisabledKind === "quota").length, 1);
+      assert.equal(state.filter((s) => s.enabled && s.cooldownRemainingMs > 0).length, 1);
+      assert.ok(state.every((s) => s.autoDisabledKind !== "quota"));
       assert.ok(state.every((s) => s.activeInflight === 0));
       assert.equal(pool.affinitySnapshot().length, 1);
     } finally { pool.close(); }

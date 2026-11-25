@@ -1143,6 +1143,11 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
             <div class="setting-row"><div class="setting-info"><h3>请求队列</h3><p id="admissionStats">正在读取</p></div></div>
 
             <div class="setting-row">
+              <div class="setting-info"><h3>临时限额冷却时间（秒）</h3><p>临时 usage limit 或 429 后自动换号，账号保持启用并在冷却到期后恢复。默认 300 秒；上游明确给出恢复时间时优先使用。明确月度额度耗尽等待额度重置。</p></div>
+              <input id="cfgTemporaryCooldown" type="number" min="1" max="86400" step="1" value="300" style="width:110px;" />
+            </div>
+
+            <div class="setting-row">
               <div class="setting-info"><h3>显示思考内容</h3><p>默认关闭。只控制是否向客户端返回上游思考内容，不影响思考模式与强度。</p></div>
               <label class="switch"><input type="checkbox" id="cfgShowThinkingContent" /><span class="slider"></span></label>
             </div>
@@ -1162,7 +1167,7 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
             <div class="setting-row">
               <div class="setting-info">
                 <h3>额度耗尽 / 鉴权失效自动停用 (Auto-Disable on Exhaustion)</h3>
-                <p>当某个账号额度耗尽或返回 401 鉴权失效时，当场无缝切流至其他健康账号完成回复，并自动暂停该账号（周期重置后自动唤醒）。</p>
+                <p>明确额度耗尽时暂停到重置时间；认证失效需重新检查凭证。临时限制仅冷却，不永久停用。仅在尚未输出真实内容时自动换号。</p>
               </div>
               <label class="switch"><input type="checkbox" id="cfgAutoDisable" /><span class="slider"></span></label>
             </div>
@@ -2123,7 +2128,7 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
           : '<span class="status-line" style="color:var(--fg-muted);"><span class="dot dot-off"></span>' + esc(tr("备用停用", "Standby")) + '</span>';
       }
       if (slot.cooldownRemainingMs > 0) {
-        return '<span class="status-line" style="color:var(--warn);"><span class="dot dot-warn"></span>' + esc(tr("冷却 ", "Cooldown ")) + Math.ceil(slot.cooldownRemainingMs / 1000) + 's</span>';
+        return '<span class="status-line" style="color:var(--warn);" title="' + esc((slot.cooldownReason || '') + (slot.cooldownUntil ? ' · ' + new Date(slot.cooldownUntil).toLocaleString() : '')) + '"><span class="dot dot-warn"></span>' + esc(tr("冷却 ", "Cooldown ")) + Math.ceil(slot.cooldownRemainingMs / 1000) + 's</span>';
       }
       return '<span class="status-line"><span class="dot dot-ok"></span>' + esc(tr("在线负载", "Active")) + '</span>';
     }
@@ -2519,6 +2524,7 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
 
       if (settings.lbStrategy) { $("cfgLbStrategy").value = settings.lbStrategy; syncSelectUi($("cfgLbStrategy")); }
       $("cfgAccountMaxConcurrent").value = settings.accountMaxConcurrent || 2;
+      $("cfgTemporaryCooldown").value = settings.temporaryLimitCooldownSeconds || 300;
       $("cfgShowThinkingContent").checked = settings.showThinkingContent === true;
       const admission = (data.runtime || {}).admission;
       $("admissionStats").textContent = admission ? tr("活跃 / 上限：", "Active / limit: ") + admission.active + " / " + admission.maxConcurrent + tr("；排队 / 上限：", "; queued / limit: ") + admission.queued + " / " + admission.maxQueued : "—";
@@ -4176,6 +4182,7 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
           body: JSON.stringify({
             lbStrategy: $("cfgLbStrategy").value,
             accountMaxConcurrent: Number($("cfgAccountMaxConcurrent").value),
+            temporaryLimitCooldownSeconds: Number($("cfgTemporaryCooldown").value),
             showThinkingContent: $("cfgShowThinkingContent").checked,
             sessionAffinityEnabled: $("cfgAffinityEnabled").checked,
             sessionAffinityTtlSeconds: Number($("cfgAffinityTtl").value) || 3600,

@@ -10,7 +10,8 @@ import { normalizeBaseModelId, redactSecrets } from "../utils/hash.js";
 import { maskProxyUrl, validateProxyUrl } from "../utils/proxy-agent.js";
 import { persistPoolConfigToEnvFile } from "./config.js";
 import { SessionAffinityTable, type AffinityBindingView } from "./session-affinity.js";
-import { GatewayError, type AutoDisabledState, type GatewayConfig, type LbStrategy } from "./types.js";
+import { GatewayError, type AccountCooldownState, type AutoDisabledState, type GatewayConfig, type LbStrategy } from "./types.js";
+import { classifyAccountLimit, parseResetTime } from "./limit-policy.js";
 
 export interface KeyIdentitySummary {
   apiKeyName: string;
@@ -49,6 +50,8 @@ export interface KeySlotStatus {
   weight: number;
   stickySessions: number;
   cooldownRemainingMs: number;
+  cooldownUntil?: string;
+  cooldownReason?: string;
   totalSelected: number;
   affinityHits: number;
   rateLimitHits: number;
@@ -81,6 +84,7 @@ interface InternalKeySlot {
   maxConcurrent: number;
   weight: number;
   cooldownUntil: number;
+  cooldownReason?: string;
   consecutiveRateLimits: number;
   selected: number;
   affinityHits: number;
@@ -114,6 +118,7 @@ export interface PoolRoutingSettings {
   autoDisableExhaustedKeys: boolean;
   incognitoMode: boolean;
   accountMaxConcurrent?: number;
+  temporaryLimitCooldownSeconds?: number;
 }
 
 export function maskSecretKey(key: string): string {
@@ -137,19 +142,7 @@ export function classifyModelQuotaPool(_requestedModel: string): "auto" | "api" 
  * (as opposed to a transient per-minute concurrency burst).
  */
 export function isQuotaOrBillingExhaustedError(err: GatewayError): boolean {
-  if (err.status === 402) return true;
-  const hay = `${err.code} ${err.message}`.toLowerCase();
-  return (
-    hay.includes("insufficient_quota") ||
-    hay.includes("out of credits") ||
-    hay.includes("usage limit") ||
-    hay.includes("spend limit") ||
-    hay.includes("monthly limit") ||
-    hay.includes("included usage") ||
-    hay.includes("billing limit") ||
-    hay.includes("payment required") ||
-    hay.includes("plan limit")
-  );
+  return classifyAccountLimit(err)?.kind === "quota";
 }
 
 function getRemainingPercentForPool(quota: QuickPlanQuotaView | undefined, pool: "auto" | "api"): number | null {
@@ -176,6 +169,7 @@ export class UpstreamKeyPool {
   private incognitoMode: boolean;
   private rrIndex = 0;
   private accountMaxConcurrent: number;
+  private temporaryLimitCooldownSeconds: number;
   private readonly queueWaitTimeoutMs: number;
   private readonly capacityWaiters = new Set<() => void>();
   private closed = false;
@@ -189,6 +183,8 @@ export class UpstreamKeyPool {
     | "keyProxies"
     | "keyAddedAt"
     | "keyAutoDisabled"
+    | "keyCooldowns"
+    | "temporaryLimitCooldownSeconds"
     | "keyCooldownMs"
     | "lbStrategy"
     | "sessionAffinityEnabled"
@@ -203,6 +199,7 @@ export class UpstreamKeyPool {
     | "queueWaitTimeoutMs"
   >) {
     this.baseCooldownMs = config.keyCooldownMs;
+    this.temporaryLimitCooldownSeconds = config.temporaryLimitCooldownSeconds ?? 300;
     this.accountMaxConcurrent = config.accountMaxConcurrent ?? 2;
     this.queueWaitTimeoutMs = config.queueWaitTimeoutMs ?? 30000;
     this.lbStrategy = config.lbStrategy;
@@ -250,6 +247,34 @@ export class UpstreamKeyPool {
         }
       }
     }
+    let migrated = false;
+    for (const slot of this.slots) {
+      const automatic = config.keyAutoDisabled?.[slot.slotId];
+      if (automatic && slot.enabled) {
+        slot.autoDisabledKind = automatic.kind;
+        slot.autoDisabledReason = automatic.reason;
+        slot.autoResetAtMs = automatic.resetAtMs;
+        if (automatic.kind === "quota") slot.autoPoolExhausted = true;
+      }
+      const saved = config.keyCooldowns?.[slot.slotId];
+      if (saved && saved.untilMs > bootNow) {
+        slot.cooldownUntil = saved.untilMs;
+        slot.cooldownReason = saved.reason;
+      }
+      // Earlier versions treated the generic platform usage-limit reply as permanent quota exhaustion.
+      if (slot.autoDisabledKind === "quota" && (slot.autoDisabledReason?.startsWith("Auto-disabled (quota exhausted): AWS Quick account reached its") || slot.autoDisabledReason === "Auto-disabled: Session burst pool reached 0%")) {
+        slot.enabled = true;
+        slot.autoDisabledKind = undefined;
+        slot.autoDisabledReason = undefined;
+        slot.autoResetAtMs = undefined;
+        slot.autoPoolExhausted = false;
+        slot.apiPoolExhausted = false;
+        slot.cooldownUntil = bootNow + this.temporaryLimitCooldownSeconds * 1000;
+        slot.cooldownReason = "Temporary usage limit (migrated from earlier classification)";
+        migrated = true;
+      }
+    }
+    if (migrated) this.persist();
   }
 
   private upsertInternal(rawKey: string, enabled: boolean, label?: string): InternalKeySlot {
@@ -360,8 +385,10 @@ export class UpstreamKeyPool {
       if (s.addedAt) keyAddedAt[s.slotId] = s.addedAt;
     }
     const keyAutoDisabled: Record<string, AutoDisabledState> = {};
+    const keyCooldowns: Record<string, AccountCooldownState> = {};
     for (const s of this.slots) {
-      if (!s.enabled && s.autoDisabledKind && s.autoDisabledReason) {
+      if (s.cooldownUntil > Date.now()) keyCooldowns[s.slotId] = { untilMs: s.cooldownUntil, reason: s.cooldownReason || "Temporary upstream failure" };
+      if (s.autoDisabledKind && s.autoDisabledReason) {
         keyAutoDisabled[s.slotId] = {
           kind: s.autoDisabledKind,
           reason: s.autoDisabledReason,
@@ -376,6 +403,8 @@ export class UpstreamKeyPool {
       keyProxies,
       keyAddedAt,
       keyAutoDisabled,
+      keyCooldowns,
+      temporaryLimitCooldownSeconds: this.temporaryLimitCooldownSeconds,
       accountMaxConcurrent: this.accountMaxConcurrent,
       keyConcurrencyLimits: Object.fromEntries(this.slots.map((s) => [s.slotId, s.maxConcurrent])),
       keyWeights: Object.fromEntries(this.slots.map((s) => [s.slotId, s.weight])),
@@ -394,11 +423,15 @@ export class UpstreamKeyPool {
       sessionAffinityTtlSeconds: Math.round(this.sessionAffinityTtlMs / 1000),
       autoDisableExhaustedKeys: this.autoDisableExhaustedKeys,
       incognitoMode: this.incognitoMode,
-      accountMaxConcurrent: this.accountMaxConcurrent
+      accountMaxConcurrent: this.accountMaxConcurrent,
+      temporaryLimitCooldownSeconds: this.temporaryLimitCooldownSeconds
     };
   }
 
   updateSettings(patch: Partial<PoolRoutingSettings>): void {
+    if (patch.temporaryLimitCooldownSeconds !== undefined && (!Number.isInteger(patch.temporaryLimitCooldownSeconds) || patch.temporaryLimitCooldownSeconds < 1 || patch.temporaryLimitCooldownSeconds > 86400)) {
+      throw new GatewayError("Temporary cooldown must be an integer between 1 and 86400 seconds.", 400, "invalid_cooldown");
+    }
     if (patch.accountMaxConcurrent !== undefined) {
       if (!Number.isInteger(patch.accountMaxConcurrent) || patch.accountMaxConcurrent < 1 || patch.accountMaxConcurrent > 100) throw new GatewayError("Account concurrency must be between 1 and 100.", 400, "invalid_concurrency");
       const previous = this.accountMaxConcurrent;
@@ -406,6 +439,7 @@ export class UpstreamKeyPool {
       for (const slot of this.slots) if (slot.maxConcurrent === previous) slot.maxConcurrent = this.accountMaxConcurrent;
     }
     if (patch.lbStrategy) this.lbStrategy = patch.lbStrategy;
+    if (patch.temporaryLimitCooldownSeconds !== undefined) this.temporaryLimitCooldownSeconds = patch.temporaryLimitCooldownSeconds;
     if (typeof patch.sessionAffinityEnabled === "boolean") {
       this.sessionAffinityEnabled = patch.sessionAffinityEnabled;
       if (!patch.sessionAffinityEnabled) this.affinityTable.clearAll();
@@ -446,14 +480,21 @@ export class UpstreamKeyPool {
     const now = Date.now();
     let changed = false;
     for (const s of this.slots) {
+      if (s.cooldownUntil > 0 && s.cooldownUntil <= now) {
+        s.cooldownUntil = 0;
+        s.cooldownReason = undefined;
+        if (s.quota?.sessionPool.remainingPercent === 0) s.quota.sessionPool.remainingPercent = null;
+        changed = true;
+      }
       // Only quota trips self-heal on the billing reset; an auth failure needs an explicit re-check.
-      if (!s.enabled && s.autoDisabledReason && s.autoDisabledKind === "quota" && s.autoResetAtMs && now >= s.autoResetAtMs) {
+      if (s.autoDisabledKind === "quota" && s.autoResetAtMs && now >= s.autoResetAtMs) {
         s.enabled = true;
         s.autoDisabledReason = undefined;
         s.autoDisabledKind = undefined;
         s.autoResetAtMs = undefined;
         s.apiPoolExhausted = false;
         s.autoPoolExhausted = false;
+        s.quota = undefined;
         changed = true;
       }
     }
@@ -553,7 +594,7 @@ export class UpstreamKeyPool {
       catch (error) {
         if (!(error instanceof GatewayError) || error.code !== "accounts_busy") throw error;
         const remaining = deadline - Date.now();
-        if (remaining <= 0) throw Object.assign(new GatewayError("Timed out waiting for an available account.", 429, "account_queue_timeout"), { retryAfter: 1 });
+        if (remaining <= 0) throw Object.assign(new GatewayError("Timed out waiting for an available account.", 429, "account_queue_timeout"), { retryAfter: (error as GatewayError & { retryAfter?: number }).retryAfter ?? 1 });
         await new Promise<void>((resolve) => {
           const wake = () => { clearTimeout(timer); this.capacityWaiters.delete(wake); signal?.removeEventListener("abort", wake); resolve(); };
           const timer = setTimeout(wake, Math.min(remaining, 500));
@@ -596,11 +637,6 @@ export class UpstreamKeyPool {
     const targetPool = classifyModelQuotaPool(requestedModel);
     const excludedIds = new Set([...(excludeKeys ?? [])].map(computeKeySlotId));
 
-    // Clear expired cooldowns
-    for (const s of this.slots) {
-      if (s.cooldownUntil > 0 && s.cooldownUntil <= now) s.cooldownUntil = 0;
-    }
-
     // Step 1: Check CPA-style Sticky Session Affinity first!
     if (this.sessionAffinityEnabled && conversationKey) {
       const stickyRawKey = this.affinityTable.lookup(conversationKey, this.sessionAffinityTtlMs);
@@ -623,7 +659,7 @@ export class UpstreamKeyPool {
     let candidates = enabledSlots.filter((s) => this.isSlotEligibleForPool(s, targetPool, now));
     if (!candidates.length) {
       const cooling = enabledSlots.filter((s) => s.cooldownUntil > now);
-      if (cooling.length) throw this.capacityError("All available accounts are cooling down.");
+      if (cooling.length) throw Object.assign(this.capacityError("All available accounts are cooling down."), { retryAfter: Math.max(1, Math.ceil((Math.min(...cooling.map((s) => s.cooldownUntil)) - now) / 1000)) });
       throw new GatewayError("All enabled AWS Quick accounts have exhausted their quota.", 429, "quota_exhausted");
     }
     candidates = candidates.filter((s) => s.activeInflight < s.maxConcurrent);
@@ -700,8 +736,23 @@ export class UpstreamKeyPool {
     slot.consecutiveRateLimits += 1;
     const multiplier = Math.min(10, 2 ** (slot.consecutiveRateLimits - 1));
     const backoffMs = Math.min(300_000, this.baseCooldownMs * multiplier);
-    slot.cooldownUntil = Date.now() + backoffMs;
+    slot.cooldownUntil = Math.max(slot.cooldownUntil, Date.now() + backoffMs);
+    slot.cooldownReason = "Transient upstream connection failure";
     this.affinityTable.evictAllForKey(slot.rawKey);
+    this.persist();
+  }
+
+  reportTemporaryLimit(rawKey: string, retryAtMs?: number, reason = "Temporary upstream usage limit"): void {
+    const slot = this.slots.find((s) => s.slotId === computeKeySlotId(rawKey));
+    if (!slot) return;
+    slot.rateLimits++;
+    const now = Date.now();
+    const until = retryAtMs && retryAtMs > now ? retryAtMs : now + this.temporaryLimitCooldownSeconds * 1000;
+    slot.cooldownUntil = Math.max(slot.cooldownUntil, until);
+    slot.cooldownReason = redactSecrets(reason).slice(0, 160);
+    this.affinityTable.evictAllForKey(slot.rawKey);
+    this.persist();
+    this.notifyCapacity();
   }
 
   /**
@@ -709,11 +760,16 @@ export class UpstreamKeyPool {
    * Evicts sticky sessions from Account A so they seamlessly rebind to Account B,
    * marks the affected pool exhausted, and auto-disables Account A if configured!
    */
-  reportQuotaExhausted(rawKey: string, requestedModel: string, reasonDetail?: string): void {
+  reportQuotaExhausted(rawKey: string, requestedModel: string, reasonDetail?: string, retryAtMs?: number): void {
     const slot = this.slots.find((s) => s.slotId === computeKeySlotId(rawKey));
     if (!slot) return;
     slot.quotaExhaustedHits += 1;
+    if (!slot.enabled && slot.autoDisabledKind !== "quota") return;
     this.affinityTable.evictAllForKey(slot.rawKey);
+    const now = Date.now();
+    slot.autoResetAtMs = retryAtMs && retryAtMs > now ? retryAtMs : parseResetTime(slot.quota?.billingCycleEnd, now) ?? (slot.autoResetAtMs && slot.autoResetAtMs > now ? slot.autoResetAtMs : now + 3600000);
+    slot.autoDisabledKind = "quota";
+    slot.autoDisabledReason = reasonDetail ? `Auto-disabled (quota exhausted): ${redactSecrets(reasonDetail).slice(0, 120)}` : "Auto-disabled: quota exhausted";
 
     const pool = classifyModelQuotaPool(requestedModel);
     if (pool === "auto") {
@@ -733,27 +789,29 @@ export class UpstreamKeyPool {
         slot.autoDisabledReason = reasonDetail
           ? `Auto-disabled (quota exhausted): ${redactSecrets(reasonDetail).slice(0, 60)}`
           : "Auto-disabled: quota exhausted";
-        this.persist();
       }
     }
+    this.persist();
+    this.notifyCapacity();
   }
 
   reportAuthFailure(rawKey: string, reasonDetail?: string): void {
     const slot = this.slots.find((s) => s.slotId === computeKeySlotId(rawKey));
     if (!slot) return;
     slot.authErrors += 1;
+    if (!slot.enabled && !slot.autoDisabledKind) return;
     this.affinityTable.evictAllForKey(slot.rawKey);
+    slot.autoDisabledKind = "auth";
+    slot.autoDisabledReason = reasonDetail ? `Auto-disabled (auth failed): ${redactSecrets(reasonDetail).slice(0, 60)}` : "Auto-disabled: authentication failed (401 Unauthorized)";
+    slot.autoResetAtMs = undefined;
 
     if (this.autoDisableExhaustedKeys) {
       slot.enabled = false;
-      slot.autoDisabledKind = "auth";
-      slot.autoDisabledReason = reasonDetail
-        ? `Auto-disabled (auth failed): ${redactSecrets(reasonDetail).slice(0, 60)}`
-        : "Auto-disabled: authentication failed (401 Unauthorized)";
-      this.persist();
     } else {
-      slot.cooldownUntil = Date.now() + this.baseCooldownMs * 10;
+      slot.cooldownUntil = Math.max(slot.cooldownUntil, Date.now() + this.baseCooldownMs * 10);
+      slot.cooldownReason = "Authentication failed; awaiting credential retry";
     }
+    this.persist();
   }
 
   /**
@@ -792,43 +850,27 @@ export class UpstreamKeyPool {
     slot.quota = quota;
     slot.quotaUpdatedAt = new Date().toISOString();
 
-    const prevResetMs = slot.autoResetAtMs;
-    if (quota.billingCycleEnd) {
-      const endMs = Date.parse(quota.billingCycleEnd);
-      if (Number.isFinite(endMs)) slot.autoResetAtMs = endMs;
-    }
-
     const autoRem = quota.sessionPool.remainingPercent;
     const apiRem = quota.premiumApiPool.remainingPercent;
-
-    slot.autoPoolExhausted = autoRem !== null && autoRem <= 0;
+    // Monthly exhaustion is a hard quota; the shorter session window is a temporary cooldown.
     slot.apiPoolExhausted = apiRem !== null && apiRem <= 0;
-    const exhausted = slot.autoPoolExhausted || slot.apiPoolExhausted;
-
-    // Proactive auto-disable if either Session burst pool or Monthly 10h pool hits 0%.
-    if (this.autoDisableExhaustedKeys && slot.enabled && exhausted) {
-      slot.enabled = false;
-      slot.autoDisabledKind = "quota";
-      slot.autoDisabledReason = slot.apiPoolExhausted
-        ? "Auto-disabled: Monthly 10h pool reached 0%"
-        : "Auto-disabled: Session burst pool reached 0%";
-      this.affinityTable.evictAllForKey(slot.rawKey);
-      this.persist();
-      return;
-    }
-
-    // Recovery: a quota-tripped key that fresh telemetry shows has quota again is re-enabled.
-    if (!slot.enabled && slot.autoDisabledKind === "quota") {
-      if (!exhausted) {
+    slot.autoPoolExhausted = slot.apiPoolExhausted;
+    const managed = slot.enabled && slot.autoDisabledKind !== "auth" || slot.autoDisabledKind === "quota";
+    if (!managed) return;
+    if (slot.apiPoolExhausted) {
+      this.reportQuotaExhausted(slot.rawKey, "auto", "Monthly quota exhausted", parseResetTime(quota.billingCycleEnd));
+    } else {
+      if (slot.autoDisabledKind === "quota" && apiRem !== null && autoRem !== null && autoRem > 0) {
         slot.enabled = true;
         slot.autoDisabledReason = undefined;
         slot.autoDisabledKind = undefined;
-        slot.cooldownUntil = 0;
-        slot.consecutiveRateLimits = 0;
+        slot.autoResetAtMs = undefined;
         this.persist();
-        return;
       }
-      if (slot.autoResetAtMs !== prevResetMs) this.persist();
+      if (slot.enabled && autoRem !== null && autoRem <= 0) {
+        const resetAt = parseResetTime(quota.sessionPool.resetAt);
+        if (slot.cooldownUntil <= Date.now() || resetAt && resetAt > slot.cooldownUntil) this.reportTemporaryLimit(slot.rawKey, resetAt, "Session usage window exhausted");
+      }
     }
   }
 
@@ -911,6 +953,7 @@ export class UpstreamKeyPool {
     if (patch.weight !== undefined) slot.weight = patch.weight;
     if (patch.clearCooldown) {
       slot.cooldownUntil = 0;
+      slot.cooldownReason = undefined;
       slot.consecutiveRateLimits = 0;
     }
     if (patch.label !== undefined) {
@@ -927,12 +970,17 @@ export class UpstreamKeyPool {
       slot.enabled = patch.enabled;
       if (patch.enabled) {
         slot.cooldownUntil = 0;
+        slot.cooldownReason = undefined;
         slot.consecutiveRateLimits = 0;
         slot.autoDisabledReason = undefined;
         slot.autoDisabledKind = undefined;
+        slot.autoResetAtMs = undefined;
+        slot.autoPoolExhausted = false;
+        slot.apiPoolExhausted = false;
       } else {
         slot.autoDisabledReason = undefined;
         slot.autoDisabledKind = undefined;
+        slot.autoResetAtMs = undefined;
         this.affinityTable.evictAllForKey(slot.rawKey);
       }
     }
@@ -972,7 +1020,7 @@ export class UpstreamKeyPool {
       healthy: slot.enabled && rem === 0 && !slot.autoPoolExhausted && !slot.apiPoolExhausted,
       ...(slot.autoDisabledReason ? { autoDisabledReason: slot.autoDisabledReason } : {}),
       ...(slot.autoDisabledKind && !slot.enabled ? { autoDisabledKind: slot.autoDisabledKind } : {}),
-      ...(slot.autoDisabledKind === "quota" && !slot.enabled && slot.autoResetAtMs ? { autoRecoverAt: new Date(slot.autoResetAtMs).toISOString() } : {}),
+      ...(slot.autoDisabledKind === "quota" && slot.autoResetAtMs ? { autoRecoverAt: new Date(slot.autoResetAtMs).toISOString() } : {}),
       apiPoolExhausted: slot.apiPoolExhausted,
       autoPoolExhausted: slot.autoPoolExhausted,
       activeInflight: slot.activeInflight,
@@ -980,6 +1028,7 @@ export class UpstreamKeyPool {
       weight: slot.weight,
       stickySessions: stickyCounts.get(slot.slotId) ?? 0,
       cooldownRemainingMs: rem,
+      ...(rem > 0 ? { cooldownUntil: new Date(slot.cooldownUntil).toISOString(), cooldownReason: slot.cooldownReason } : {}),
       totalSelected: slot.selected,
       affinityHits: slot.affinityHits,
       rateLimitHits: slot.rateLimits,

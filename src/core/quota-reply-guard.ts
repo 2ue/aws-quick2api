@@ -28,7 +28,7 @@ export class QuotaReplyGuard {
       const normalized = normalize(this.text).trimEnd();
       if (/^you(?:'ve| have) reached your usage limit\.\s*check your profile for details\.?$/.test(normalized)) {
         this.pending = [];
-        throw new GatewayError("AWS Quick account reached its usage limit (quota_exhausted).", 402, "quota_exhausted");
+        throw new GatewayError("AWS Quick account temporarily reached its usage limit.", 429, "usage_limit_reached");
       }
     }
     this.checking = false;

@@ -8,6 +8,7 @@ import {
 import { getSharedOutpost, parseQuickCredential } from "../aws-quick/outpost-singleton.js";
 import { fetchWebProfileUsage, listWebCloudSessions } from "../aws-quick/web-client.js";
 import { maskSecretKey } from "../core/key-pool.js";
+import { parseResetTime } from "../core/limit-policy.js";
 
 export interface QuickPlanQuotaView {
   membershipType: string;
@@ -22,6 +23,7 @@ export interface QuickPlanQuotaView {
   sessionPool: {
     usedPercent: number | null;
     remainingPercent: number | null;
+    resetAt?: string;
   };
   /** AWS Quick Monthly usage pool (minutes) */
   premiumApiPool: {
@@ -167,10 +169,11 @@ async function fetchSingleAwsQuickQuota(
     const monLimit = Number(usage.monthly?.limit ?? 600);
     const monPct = monLimit > 0 ? Math.min(100, Math.round((monUsed / monLimit) * 1000) / 10) : 0;
 
-    const resetEpoch = typeof usage.monthly?.resets_at === "number" ? usage.monthly.resets_at : undefined;
-    const billingCycleEnd = resetEpoch ? new Date(resetEpoch * 1000).toISOString() : undefined;
-    const daysRemainingInCycle = resetEpoch
-      ? Math.max(0, Math.ceil((resetEpoch * 1000 - now) / 86_400_000))
+    const monthlyResetMs = parseResetTime(usage.monthly?.resets_at, now);
+    const sessionResetMs = parseResetTime(usage.session?.resets_at, now);
+    const billingCycleEnd = monthlyResetMs ? new Date(monthlyResetMs).toISOString() : undefined;
+    const daysRemainingInCycle = monthlyResetMs
+      ? Math.max(0, Math.ceil((monthlyResetMs - now) / 86_400_000))
       : undefined;
 
     const trialEpoch = typeof usage.subscription?.free_trial_metadata?.expiry_date === "number"
@@ -205,6 +208,7 @@ async function fetchSingleAwsQuickQuota(
         sessionPool: {
           usedPercent: sessPct,
           remainingPercent: Math.max(0, Math.round((100 - sessPct) * 10) / 10),
+          ...(sessionResetMs ? { resetAt: new Date(sessionResetMs).toISOString() } : {}),
         },
         premiumApiPool: {
           usedPercent: monPct,
