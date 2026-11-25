@@ -62,3 +62,5 @@ CLI 使用独立 CLAUDE_CONFIG_DIR、空 setting-sources、strict-mcp-config。�
 该修正不等于解决过滤：修正后原始请求三个首轮样本为两次工具调用、一次过滤，随后两次完整循环尝试均在首轮过滤。样本小且存在波动，不能据此宣称成功率提高。同模型的普通问答、自然编程和普通记录查询首轮均正常，但替代任务的通过不算原任务修复。
 
 结论：Responses 输入一致性已修正；该条 Opus think 上游过滤仍未解决。没有加入绕过审核的提示、自动更换模型/强度、遇过滤反复重试或把错误包装为成功。诊断记录与无密钥复现脚本存放于仓库外 `outputs/awsq-filter-diagnostic-20261125/`。
+
+协议修正提交 `8b8b6570eb4d89268871e910566dd36062d7dded` 已推送并在 87 构建为 `aws-quick/kuk-enhanced:8b8b6570eb4d`。独立候选三协议通过后切换生产；healthy、restart 0、无 OOM，凭证身份与设置保留。生产后验：Opus think 的 Responses 普通记录查询自行完成 record_lookup → workspace_write → 最终确认，约 20 秒。此后验不算原始过滤请求修复。回滚保留于部署目录 `backups/general-client-20261125T031516Z/rollback.sh`。
