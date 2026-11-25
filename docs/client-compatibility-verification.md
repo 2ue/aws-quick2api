@@ -43,4 +43,12 @@ CLI 使用独立 CLAUDE_CONFIG_DIR、空 setting-sources、strict-mcp-config。�
 
 ## 发布验证
 
-53 项回归、TypeScript、preflight 通过。继续从 fork 拉取固定提交并构建镜像，先用独立候选容器验证三协议和真实工具循环，再切换生产，保留原镜像与回滚脚本。
+53 项回归、TypeScript、preflight 通过。代码提交 `2364840643e29345c8573e8daf272c5e7118e720` 已推送 fork；87 从 GitHub 拉取并构建镜像 `aws-quick/kuk-enhanced:2364840643e2`。
+
+独立候选容器验证三协议：Messages 自然倒计时需求自行读目录并写文件，Chat 闭包问答不调工具，Responses 查询后写 JSON，全部通过。随后生产 Compose 切换该本地镜像，healthy、restart 0、无 OOM。账号身份、客户端密钥权限及设置保持一致；运行中的 OAuth token 刷新和请求统计按正常动态数据保留。
+
+生产后验：真实 Claude Code 的自然计数器需求自行 Write 生成 counter.html，个人配置哈希一致。本机测试台 59003 使用原始鹈鹕提示、无 system/tools、模型 claude-opus-5-5，任务 `84a22581-93f9-4544-941d-74f87d8592b4` 完成，约 28 秒、5,405 字符，含 SVG 与 HTML 结束标签，无 qw-file 链接。
+
+同一测试此前任务 `537d80e0-976b-4d1c-a5f8-e0daa9476a43` 遇到传输截断：代理日志显示约 41 秒成功发出 8,988 字符，本机只收到 5,911 字符后 UND_ERR_SOCKET。保留为端到端失败样本，不计入通过。没有为重试修改提示或切换模型。
+
+旧镜像 `aws-quick/kuk-enhanced:d963fc134a2b` 保留。回滚脚本位于部署目录的 `backups/general-client-20261125T015032Z/rollback.sh`。
