@@ -493,6 +493,8 @@ export class QuickExecutionEngine {
   private readonly config: GatewayConfig;
   private readonly usageTracker: UsageTracker;
   private readonly modelListFetcher?: (apiKey: string) => Promise<SDKModel[]>;
+  private readonly onAccountLimit?: (apiKey: string) => void;
+  private readonly limitQuotaStats?: () => unknown;
   private readonly incognito: boolean;
   private readonly autoDeleteSession: boolean;
   private readonly showRoutedModelInThinking: boolean;
@@ -560,10 +562,14 @@ export class QuickExecutionEngine {
     usageTracker: UsageTracker;
     agentFactory?: AgentFactory;
     modelListFetcher?: (apiKey: string) => Promise<SDKModel[]>;
+    onAccountLimit?: (apiKey: string) => void;
+    limitQuotaStats?: () => unknown;
   }) {
     this.config = options.config;
     this.usageTracker = options.usageTracker;
     this.modelListFetcher = options.modelListFetcher;
+    this.onAccountLimit = options.onAccountLimit;
+    this.limitQuotaStats = options.limitQuotaStats;
     this.incognito = process.env.INCOGNITO !== "false";
     this.autoDeleteSession = process.env.AUTO_DELETE_SESSION === "true";
     this.showRoutedModelInThinking = process.env.SHOW_ROUTED_MODEL_IN_THINKING === "true";
@@ -575,6 +581,7 @@ export class QuickExecutionEngine {
 
   runtimeStats() {
     return {
+      quotaProbe: this.limitQuotaStats?.(),
       parkedToolSessions: 0,
       warmIncrementalSessions: this.warmThreads.size,
       warmIdleSessions: 0,
@@ -801,6 +808,10 @@ export class QuickExecutionEngine {
           keyPool.reportRateLimit(lease.apiKey);
         } else if (isAuthErr) {
           keyPool.reportAuthFailure(lease.apiKey, msg);
+        }
+        if (limit) {
+          // Diagnostics must never delay failover or replace the original inference error.
+          try { this.onAccountLimit?.(lease.apiKey); } catch { /* Preserve inference behavior. */ }
         }
 
         const canFailover =

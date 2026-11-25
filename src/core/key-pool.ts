@@ -67,6 +67,7 @@ export interface KeySlotStatus {
 }
 
 interface InternalKeySlot {
+  quotaRevision: number;
   slotId: string;
   label?: string;
   authType: KeyAuthType;
@@ -281,6 +282,7 @@ export class UpstreamKeyPool {
     const trimmed = rawKey.trim();
     const existing = this.slots.find((s) => s.slotId === computeKeySlotId(trimmed));
     if (existing) {
+      existing.quotaRevision++;
       existing.rawKey = trimmed;
       existing.maskedKey = maskSecretKey(trimmed);
       this.affinityTable.replaceCredential(existing.slotId, trimmed, existing.maskedKey);
@@ -334,6 +336,7 @@ export class UpstreamKeyPool {
       rateLimits: 0,
       quotaExhaustedHits: 0,
       authErrors: 0,
+      quotaRevision: 0,
       ...(initialIdentity ? { identity: initialIdentity } : {}),
     };
     this.slots.push(slot);
@@ -488,6 +491,7 @@ export class UpstreamKeyPool {
       }
       // Only quota trips self-heal on the billing reset; an auth failure needs an explicit re-check.
       if (s.autoDisabledKind === "quota" && s.autoResetAtMs && now >= s.autoResetAtMs) {
+        s.quotaRevision++;
         s.enabled = true;
         s.autoDisabledReason = undefined;
         s.autoDisabledKind = undefined;
@@ -765,6 +769,7 @@ export class UpstreamKeyPool {
     if (!slot) return;
     slot.quotaExhaustedHits += 1;
     if (!slot.enabled && slot.autoDisabledKind !== "quota") return;
+    slot.quotaRevision++;
     this.affinityTable.evictAllForKey(slot.rawKey);
     const now = Date.now();
     slot.autoResetAtMs = retryAtMs && retryAtMs > now ? retryAtMs : parseResetTime(slot.quota?.billingCycleEnd, now) ?? (slot.autoResetAtMs && slot.autoResetAtMs > now ? slot.autoResetAtMs : now + 3600000);
@@ -798,6 +803,7 @@ export class UpstreamKeyPool {
   reportAuthFailure(rawKey: string, reasonDetail?: string): void {
     const slot = this.slots.find((s) => s.slotId === computeKeySlotId(rawKey));
     if (!slot) return;
+    slot.quotaRevision++;
     slot.authErrors += 1;
     if (!slot.enabled && !slot.autoDisabledKind) return;
     this.affinityTable.evictAllForKey(slot.rawKey);
@@ -847,14 +853,18 @@ export class UpstreamKeyPool {
     if (bot) slot.bot = bot;
     if (!quota) return;
 
+    slot.quotaRevision++;
+
     slot.quota = quota;
     slot.quotaUpdatedAt = new Date().toISOString();
 
     const autoRem = quota.sessionPool.remainingPercent;
     const apiRem = quota.premiumApiPool.remainingPercent;
     // Monthly exhaustion is a hard quota; the shorter session window is a temporary cooldown.
-    slot.apiPoolExhausted = apiRem !== null && apiRem <= 0;
-    slot.autoPoolExhausted = slot.apiPoolExhausted;
+    if (apiRem !== null) {
+      slot.apiPoolExhausted = apiRem <= 0;
+      slot.autoPoolExhausted = slot.apiPoolExhausted;
+    }
     const managed = slot.enabled && slot.autoDisabledKind !== "auth" || slot.autoDisabledKind === "quota";
     if (!managed) return;
     if (slot.apiPoolExhausted) {
@@ -874,6 +884,30 @@ export class UpstreamKeyPool {
     }
   }
 
+  /** Capture identity and administrative state so late diagnostics cannot undo newer decisions. */
+  createLimitQuotaUpdater(rawKey: string): ((quota?: QuickPlanQuotaView, error?: string) => void) | undefined {
+    const slot = this.slots.find((s) => s.slotId === computeKeySlotId(rawKey));
+    if (!slot || slot.autoDisabledKind === "auth" || !slot.enabled && slot.autoDisabledKind !== "quota") return undefined;
+    const revision = slot.quotaRevision;
+    return (quota, error) => {
+      if (this.closed || !this.slots.includes(slot) || slot.quotaRevision !== revision) return;
+      if (error) { slot.lastSyncError = redactSecrets(error).slice(0, 220);return; }
+      if (!quota) return;
+      slot.quota = quota;
+      slot.quotaUpdatedAt = new Date().toISOString();
+      slot.lastSyncError = undefined;
+      slot.quotaRevision++;
+      // Positive/unknown telemetry does not cancel an actual limit response or re-enable its account.
+      if (quota.premiumApiPool.remainingPercent === 0) {
+        slot.apiPoolExhausted = true;
+        slot.autoPoolExhausted = true;
+        this.reportQuotaExhausted(slot.rawKey, "auto", "Monthly quota exhausted (automatic usage check)", parseResetTime(quota.billingCycleEnd));
+      } else if (slot.enabled && quota.sessionPool.remainingPercent === 0) {
+        this.reportTemporaryLimit(slot.rawKey, parseResetTime(quota.sessionPool.resetAt), "Session usage window exhausted (automatic usage check)");
+      }
+    };
+  }
+
   /** Quota-tripped keys that should be probed for recovery (disabled by the gateway, not by a person). */
   recoveryProbeKeys(): string[] {
     return this.slots.filter((s) => !s.enabled && s.autoDisabledKind === "quota").map((s) => s.rawKey);
@@ -883,6 +917,7 @@ export class UpstreamKeyPool {
   recheckSlot(slotId: string): void {
     const slot = this.slots.find((s) => s.slotId === slotId);
     if (!slot) throw new GatewayError(`Key slot '${slotId}' not found.`, 404, "not_found");
+    slot.quotaRevision++;
     if (!slot.enabled && slot.autoDisabledKind) {
       slot.enabled = true;
       slot.autoDisabledReason = undefined;
@@ -911,6 +946,7 @@ export class UpstreamKeyPool {
       const prefix = `web:${webCred.accountId}|`;
       const existing = this.slots.find((s) => s.rawKey.startsWith(prefix));
       if (existing) {
+        existing.quotaRevision++;
         existing.rawKey = normalized;
         existing.maskedKey = maskSecretKey(normalized);
         existing.enabled = enabled;
@@ -952,6 +988,7 @@ export class UpstreamKeyPool {
     if (patch.maxConcurrent !== undefined) slot.maxConcurrent = patch.maxConcurrent;
     if (patch.weight !== undefined) slot.weight = patch.weight;
     if (patch.clearCooldown) {
+      slot.quotaRevision++;
       slot.cooldownUntil = 0;
       slot.cooldownReason = undefined;
       slot.consecutiveRateLimits = 0;
@@ -962,11 +999,13 @@ export class UpstreamKeyPool {
     if (patch.proxyUrl !== undefined) {
       try {
         slot.proxyUrl = validateProxyUrl(patch.proxyUrl);
+        slot.quotaRevision++;
       } catch (err) {
         throw new GatewayError(err instanceof Error ? err.message : "Invalid proxy URL.", 400, "invalid_proxy_url");
       }
     }
     if (typeof patch.enabled === "boolean") {
+      slot.quotaRevision++;
       slot.enabled = patch.enabled;
       if (patch.enabled) {
         slot.cooldownUntil = 0;

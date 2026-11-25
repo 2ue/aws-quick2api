@@ -1,5 +1,8 @@
 import {
   fetchOAuthProfileUsage,
+  deriveStableOutpostId,
+  QUICK_APP_VERSION,
+  sanitizeAwsQuickWsHost,
   fetchOAuthUserIdentity,
   getCachedOAuthUserIdentity,
   listOAuthCloudSessions,
@@ -9,6 +12,9 @@ import { getSharedOutpost, parseQuickCredential } from "../aws-quick/outpost-sin
 import { fetchWebProfileUsage, listWebCloudSessions } from "../aws-quick/web-client.js";
 import { maskSecretKey } from "../core/key-pool.js";
 import { parseResetTime } from "../core/limit-policy.js";
+import type { QuickQuotaUsage } from "../aws-quick/types.js";
+import { fetchViaOptionalProxy } from "../utils/proxy-agent.js";
+import crypto from "node:crypto";
 
 export interface QuickPlanQuotaView {
   membershipType: string;
@@ -87,6 +93,71 @@ function formatMinutesAsHours(mins: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+
+function parseUsagePool(pool: QuickQuotaUsage["session"] | QuickQuotaUsage["monthly"]) {
+  const numeric = (value: unknown) => typeof value === "number" && Number.isFinite(value) || typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value.trim());
+  const used = Number(pool?.used);const limit = Number(pool?.limit);
+  const known = numeric(pool?.used) && numeric(pool?.limit) && used >= 0 && limit > 0;
+  const percent = known ? Math.min(100, Math.round(used / limit * 1000) / 10) : null;
+  const remaining = known ? used >= limit ? 0 : Math.max(0.1, Math.round((1 - used / limit) * 1000) / 10) : null;
+  return { used, limit, percent, remaining, known };
+}
+
+export function parseQuickPlanQuota(usage: QuickQuotaUsage, now = Date.now()): QuickPlanQuotaView {
+    const session = parseUsagePool(usage.session);
+    const sessUsed = session.used;const sessLimit = session.limit;const sessPct = session.percent;
+
+    const monthly = parseUsagePool(usage.monthly);
+    const monUsed = monthly.used;const monLimit = monthly.limit;const monPct = monthly.percent;
+
+    const monthlyResetMs = parseResetTime(usage.monthly?.resets_at, now);
+    const sessionResetMs = parseResetTime(usage.session?.resets_at, now);
+    const billingCycleEnd = monthlyResetMs ? new Date(monthlyResetMs).toISOString() : undefined;
+    const daysRemainingInCycle = monthlyResetMs
+      ? Math.max(0, Math.ceil((monthlyResetMs - now) / 86_400_000))
+      : undefined;
+
+    const trialEpoch = typeof usage.subscription?.free_trial_metadata?.expiry_date === "number"
+      ? usage.subscription.free_trial_metadata.expiry_date
+      : undefined;
+    const trialExpiresAt = trialEpoch ? new Date(trialEpoch * 1000).toISOString() : undefined;
+    const trialDaysRemaining = trialEpoch
+      ? Math.max(0, Math.ceil((trialEpoch * 1000 - now) / 86_400_000))
+      : undefined;
+
+    const subType = usage.subscription?.subscription_type || "AWS_QUICK";
+
+    return {
+        membershipType: subType,
+        billingCycleEnd,
+        daysRemainingInCycle,
+        ...(trialExpiresAt ? { trialExpiresAt } : {}),
+        ...(trialDaysRemaining !== undefined ? { trialDaysRemaining } : {}),
+        autoDisplayMessage: session.known ? `Session ${sessUsed}/${sessLimit}` : "Session usage unavailable",
+        apiDisplayMessage: monthly.known ? `Monthly ${formatMinutesAsHours(monUsed)} / ${formatMinutesAsHours(monLimit)}` : "Monthly usage unavailable",
+        sessionPool: {
+          usedPercent: sessPct,
+          remainingPercent: session.remaining,
+          ...(sessionResetMs ? { resetAt: new Date(sessionResetMs).toISOString() } : {}),
+        },
+        premiumApiPool: {
+          usedPercent: monPct,
+          remainingPercent: monthly.remaining,
+        },
+        overallIncludedPlan: {
+          usedPercent: monPct,
+          remainingPercent: monthly.remaining,
+          allowanceUsd: null,
+        },
+        onDemandSpend: {
+          enabled: false,
+          usedUsd: 0,
+          limitUsd: null,
+          remainingUsd: null,
+        },
+      };
+}
+
 async function fetchSingleAwsQuickQuota(
   apiKey: string,
   force = false,
@@ -161,31 +232,6 @@ async function fetchSingleAwsQuickQuota(
         : null;
     }
 
-    const sessUsed = Number(usage.session?.used ?? 0);
-    const sessLimit = Number(usage.session?.limit ?? 100);
-    const sessPct = sessLimit > 0 ? Math.min(100, Math.round((sessUsed / sessLimit) * 1000) / 10) : 0;
-
-    const monUsed = Number(usage.monthly?.used ?? 0);
-    const monLimit = Number(usage.monthly?.limit ?? 600);
-    const monPct = monLimit > 0 ? Math.min(100, Math.round((monUsed / monLimit) * 1000) / 10) : 0;
-
-    const monthlyResetMs = parseResetTime(usage.monthly?.resets_at, now);
-    const sessionResetMs = parseResetTime(usage.session?.resets_at, now);
-    const billingCycleEnd = monthlyResetMs ? new Date(monthlyResetMs).toISOString() : undefined;
-    const daysRemainingInCycle = monthlyResetMs
-      ? Math.max(0, Math.ceil((monthlyResetMs - now) / 86_400_000))
-      : undefined;
-
-    const trialEpoch = typeof usage.subscription?.free_trial_metadata?.expiry_date === "number"
-      ? usage.subscription.free_trial_metadata.expiry_date
-      : undefined;
-    const trialExpiresAt = trialEpoch ? new Date(trialEpoch * 1000).toISOString() : undefined;
-    const trialDaysRemaining = trialEpoch
-      ? Math.max(0, Math.ceil((trialEpoch * 1000 - now) / 86_400_000))
-      : undefined;
-
-    const subType = usage.subscription?.subscription_type || "AWS_QUICK";
-
     const report: AccountQuotaReport = {
       maskedKey,
       status: "ok",
@@ -197,35 +243,7 @@ async function fetchSingleAwsQuickQuota(
         ...(displayName ? { displayName } : {}),
         createdAt: new Date(now).toISOString(),
       },
-      quota: {
-        membershipType: subType,
-        billingCycleEnd,
-        daysRemainingInCycle,
-        ...(trialExpiresAt ? { trialExpiresAt } : {}),
-        ...(trialDaysRemaining !== undefined ? { trialDaysRemaining } : {}),
-        autoDisplayMessage: `Session ${sessUsed}/${sessLimit}`,
-        apiDisplayMessage: `Monthly ${formatMinutesAsHours(monUsed)} / ${formatMinutesAsHours(monLimit)}`,
-        sessionPool: {
-          usedPercent: sessPct,
-          remainingPercent: Math.max(0, Math.round((100 - sessPct) * 10) / 10),
-          ...(sessionResetMs ? { resetAt: new Date(sessionResetMs).toISOString() } : {}),
-        },
-        premiumApiPool: {
-          usedPercent: monPct,
-          remainingPercent: Math.max(0, Math.round((100 - monPct) * 10) / 10),
-        },
-        overallIncludedPlan: {
-          usedPercent: monPct,
-          remainingPercent: Math.max(0, Math.round((100 - monPct) * 10) / 10),
-          allowanceUsd: null,
-        },
-        onDemandSpend: {
-          enabled: false,
-          usedUsd: 0,
-          limitUsd: null,
-          remainingUsd: null,
-        },
-      },
+      quota: parseQuickPlanQuota(usage, now),
     };
 
     summaryCache.set(apiKey, { report, expiresAtMs: now + SUMMARY_CACHE_TTL_MS });
@@ -263,4 +281,36 @@ export async function fetchAllAccountQuotas(
   };
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
   return results;
+}
+
+/** Only usage is requested: no identity probe, session listing, or forced OAuth refresh. */
+export async function fetchAccountUsageQuota(apiKey: string, signal: AbortSignal, proxyUrl?: string): Promise<QuickPlanQuotaView> {
+  signal.throwIfAborted();
+  const cred = parseQuickCredential(apiKey);
+  let usage: QuickQuotaUsage;
+  if (cred.mode === "oauth" && cred.oauth) {
+    usage = await fetchOAuthProfileUsage(cred.oauth, proxyUrl, signal);
+  } else if (cred.mode === "web" && cred.web) {
+    usage = await fetchWebProfileUsage(cred.web, proxyUrl, signal);
+  } else if (cred.mode === "token" && cred.jwt && cred.wsHost) {
+    const host = sanitizeAwsQuickWsHost(cred.wsHost);
+    const response = await fetchViaOptionalProxy(`https://${host}/integration/quick-work/qbs-event`, {
+      method: "POST", signal,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${cred.jwt}`, "x-amzn-qs-internal-trace-id": crypto.randomUUID() },
+      body: JSON.stringify({ eventType: "invokeAgent", eventBody: { invokeAgent: {
+        path: "profile/usage", queryParams: { surfaceType: "QUICK_WORK_DESKTOP_MAC", appVersion: QUICK_APP_VERSION, _method: "GET" },
+        body: {}, outpostId: cred.outpostId || deriveStableOutpostId(cred.jwt),
+      } } }),
+    }, proxyUrl);
+    if (!response.ok) throw new Error(`Quota usage query failed (${response.status})`);
+    const envelope = await response.json() as { eventResponse?: { invokeAgentResponse?: string | { body?: string } } };
+    const raw = envelope?.eventResponse?.invokeAgentResponse;
+    const result = typeof raw === "string" ? JSON.parse(raw) : raw;
+    usage = typeof result?.body === "string" ? JSON.parse(result.body) : {};
+  } else {
+    throw new Error("Automatic quota lookup requires OAuth, Web Cookie or a token with its AWS Quick host; existing cooldown retained.");
+  }
+  signal.throwIfAborted();
+  if (!usage || typeof usage !== "object") throw new Error("Invalid quota usage response");
+  return parseQuickPlanQuota(usage);
 }

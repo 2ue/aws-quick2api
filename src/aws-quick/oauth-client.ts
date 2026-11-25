@@ -743,8 +743,11 @@ async function callOAuthQbsEvent(
   httpMethod: "GET" | "POST",
   bodyObj?: Record<string, unknown>,
   proxyUrl?: string,
+  signal?: AbortSignal,
 ): Promise<unknown> {
+  signal?.throwIfAborted();
   const { accessToken } = await resolveOAuthAccessToken(cred, false, proxyUrl);
+  signal?.throwIfAborted();
   const surfaceType =
     process.platform === "win32" ? "QUICK_WORK_DESKTOP_WINDOWS" : "QUICK_WORK_DESKTOP_MAC";
   const outpostId = deriveStableOutpostId(cred.clientId);
@@ -752,6 +755,7 @@ async function callOAuthQbsEvent(
     `https://${cred.wsHost}/integration/quick-work/qbs-event`,
     {
       method: "POST",
+      signal,
       headers: {
         "Content-Type": "application/json",
         "User-Agent": QUICK_DESKTOP_USER_AGENT,
@@ -788,8 +792,9 @@ async function callOAuthQbsEvent(
 export async function fetchOAuthProfileUsage(
   cred: OAuthCredential,
   proxyUrl?: string,
+  signal?: AbortSignal,
 ): Promise<QuickQuotaUsage> {
-  const data = await callOAuthQbsEvent(cred, "profile/usage", "GET", undefined, proxyUrl);
+  const data = await callOAuthQbsEvent(cred, "profile/usage", "GET", undefined, proxyUrl, signal);
   return (data && typeof data === "object" ? data : {}) as QuickQuotaUsage;
 }
 

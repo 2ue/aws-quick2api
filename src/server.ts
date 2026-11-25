@@ -23,7 +23,8 @@ import {
 import { ClientGatewayKeyManager } from "./services/client-keys.js";
 import { ModelAccessController, normalizeBaseModelId } from "./services/model-access.js";
 import { formatOpenAiModelList, listLiveModels } from "./services/model-catalog.js";
-import { fetchAllAccountQuotas } from "./services/quota-service.js";
+import { fetchAllAccountQuotas, type fetchAccountUsageQuota } from "./services/quota-service.js";
+import { LimitQuotaProbe } from "./services/limit-quota-probe.js";
 import { RequestTraceLogger, type RequestProtocolTag } from "./services/request-logger.js";
 import { UsageLedger } from "./services/usage-ledger.js";
 import { UsageTracker } from "./services/usage-tracker.js";
@@ -40,6 +41,7 @@ export interface GatewayServerOptions {
   quotaHttpFetcher?: typeof fetch;
   sessionRpcFetcher?: typeof fetch;
   meFetcher?: NonNullable<Parameters<typeof fetchAllAccountQuotas>[1]>["meFetcher"];
+  limitQuotaFetcher?: typeof fetchAccountUsageQuota;
 }
 
 export interface GatewayServerInstance {
@@ -354,11 +356,14 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
   const usageTracker = new UsageTracker();
   const usageLedger = new UsageLedger(config.usageLedgerFile, config.recordClientIp !== false);
   const traceLogger = new RequestTraceLogger(100);
+  const limitQuotaProbe = new LimitQuotaProbe(keyPool, { fetcher: options.limitQuotaFetcher });
   const engine = new QuickExecutionEngine({
     config,
     usageTracker,
     agentFactory: options.agentFactory,
-    modelListFetcher: options.modelListFetcher
+    modelListFetcher: options.modelListFetcher,
+    onAccountLimit: (apiKey) => { void limitQuotaProbe.trigger(apiKey); },
+    limitQuotaStats: () => limitQuotaProbe.snapshot()
   });
 
 
@@ -507,8 +512,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     return reports;
   };
 
-  // Upstream quota is only ever fetched on an explicit admin action (console "sync" button, adding a key,
-  // re-check). No timer and no startup sync: repeated automatic calls risk tripping upstream abuse controls.
+  // Quota sync is explicit or triggered by an account limit. No startup sync or periodic polling.
 
   const admission = new RequestAdmission({ maxConcurrent: config.globalMaxConcurrent ?? 20,
     maxQueued: config.maxQueuedRequests ?? 200, waitTimeoutMs: config.queueWaitTimeoutMs ?? 30000 });
@@ -794,6 +798,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     traceLogger,
     admission,
     close: async () => {
+      limitQuotaProbe.close();
       admission.close();
       sessionAdmission.close();
       keyPool.close();

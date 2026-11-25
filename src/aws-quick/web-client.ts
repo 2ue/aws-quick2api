@@ -157,7 +157,9 @@ async function callWebQbsProxy(
   method: "GET" | "POST",
   bodyObj: Record<string, unknown> = {},
   proxyUrl?: string,
+  signal?: AbortSignal,
 ): Promise<unknown> {
+  signal?.throwIfAborted();
   const mbtcEnc = encodeURIComponent(cred.mbtc);
   const workingSessionId = crypto.randomUUID();
   const url =
@@ -171,6 +173,7 @@ async function callWebQbsProxy(
     url,
     {
       method: "POST",
+      signal,
       headers: {
         "Content-Type": "application/json",
         Origin: "https://quick.aws.com",
@@ -209,8 +212,9 @@ async function callWebQbsProxy(
 export async function fetchWebProfileUsage(
   cred: WebCookieCredential,
   proxyUrl?: string,
+  signal?: AbortSignal,
 ): Promise<QuickQuotaUsage> {
-  const data = await callWebQbsProxy(cred, "profile/usage", "GET", {}, proxyUrl);
+  const data = await callWebQbsProxy(cred, "profile/usage", "GET", {}, proxyUrl, signal);
   return (data && typeof data === "object" ? data : {}) as QuickQuotaUsage;
 }
 
