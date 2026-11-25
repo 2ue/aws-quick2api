@@ -73,7 +73,7 @@ Content-Type: application/json
 
 通用 `You've reached your usage limit. Check your profile for details.`、429、rate limit 和并发限制归为临时限制。账号保持启用，从调度候选中暂时移除，解除会话亲和性；尚未输出真实内容的请求使用同一模型、原始任务换号重试，每次请求最多尝试五个账号。不会把限额提示作为正常答案返回。已输出正文、真实思考或工具调用后不重新执行请求。
 
-管理台「路由配置 → 临时限制冷却（秒）」可热改默认值，范围 1–86400 秒，默认300秒；也可设置环境变量 `TEMPORARY_LIMIT_COOLDOWN_SECONDS`。管理接口示例：
+管理台「路由配置 → 临时限额冷却时间（秒）」可热改默认值，范围 1–86400 秒，默认300秒；也可设置环境变量 `TEMPORARY_LIMIT_COOLDOWN_SECONDS`。管理接口示例：
 
 ```http
 POST /v1/admin/settings
