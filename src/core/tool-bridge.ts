@@ -60,6 +60,22 @@ export function sanitizeClientSystemPromptForQuick(systemPrompt: string, hasTool
     );
 }
 
+export function buildClientCapabilityPrompt(tools: readonly NormalizedTool[], choice: ToolChoiceMode): string {
+  const canCallTools = tools.length > 0 && choice !== "none";
+  return [
+    "## External API Client Session",
+    "Respond to the caller's actual request and follow their system instructions, language, requested format and scope. Ordinary conversation, explanations, design discussions, reviews, and requests to show code are valid direct answers; do not turn them into workspace operations unless requested. This session is an API conversation, not the AWS Quick web application.",
+    "Quick's built-in workspace, file, artifact, shell and connector tools are not connected to the caller's environment. Do not use those internal tools as a substitute for client actions or deliver inaccessible artifacts such as qw-file:// links. Never claim a local file, command, search or external operation succeeded without its real client tool result.",
+    canCallTools
+      ? "Use the declared client tools when the task requires acting on the caller's environment or obtaining data from it. Requests to implement, build, fix or extend a project in the workspace imply the necessary inspection, file creation and edits, even when no filenames or tool names are given. Carry out those actions instead of returning only a plan, source listing or completion claim. Inspect existing files with client tools before changing them, preserve unrelated work, and use appropriate available tools; do not assume a particular tool name."
+      : "No client tools are callable for this turn. Answer directly with the requested text, code or complete source content. For multi-file code, label each file's path and provide its contents in the response. Do not perform or claim filesystem or MCP access, and do not replace the requested content with a link or a claim that a file was generated. If live environment data is essential, explain the missing capability rather than inventing it.",
+    ...(canCallTools ? [
+      "For each client action, follow the tool schema and bridge format below, then stop and wait for the actual result. Use successful results as evidence and handle failures as failures; correct recoverable errors without inventing data or claiming success. Continue the remaining task after tool results arrive. A missing Quick connector or an empty Quick cloud directory says nothing about client files or MCP availability.",
+      "If the user asks only for an explanation, a plan, a code example, or explicitly says not to change files, respond directly and do not write files. Do not force tool calls for ordinary conversation. Respect tool_choice and any client restrictions on actions or tests.",
+    ] : []),
+  ].join("\n");
+}
+
 /**
  * Build a compact, unambiguous instruction block for client-defined tools.
  * Kept inside AWS Quick's native `custom_prompt` when `turn.tools.length > 0`.
@@ -105,9 +121,7 @@ export function buildToolBridgePrompt(
     "## Client Tool Action Format",
     "The external client runner executes the tool actions listed below and returns their real results. This client tool catalog is independent of Quick's internal tools and connected sources. Use this bridge for client actions; a missing Quick connector does not mean a client MCP tool is unavailable.",
     "To invoke a client action, output a structured `<tool_call>` JSON block. Do not merely explain how the user could perform the action. Never fabricate tool outputs; wait for the runner's tool result before reporting completion.",
-    "## Required Client Workspace File Actions",
-    "When the user asks you to create, write, edit, save, or generate a file, you MUST invoke a file-writing action declared in the client runner tools below. Prefer a dedicated write/create/edit tool; use a listed shell or patch tool only when no suitable dedicated file tool is available. Put the complete requested file contents in the tool call arguments, then stop and wait for the real tool result before reporting completion.",
-    "The AWS Quick internal workspace and its native artifact feature are not the caller's workspace. Never create a Quick artifact for a client file request, never return a `qw-file://` URI or another inaccessible workspace URI, and never substitute an artifact link or a description of the file for the client tool call. When a client file-writing tool is available, do not put the file contents in the assistant response; write the file through the client tool and report only the confirmed path after its result arrives.",
+    "For workspace implementation tasks, use the declared client read/write/edit/shell actions as appropriate, including all necessary files when the request implies a project. Prefer dedicated file tools when suitable and include complete content in write arguments. A source listing or Quick artifact does not complete a requested workspace change. Requests only to discuss or show code should be answered directly without changing files.",
     ...(tools.some((tool) => tool.name === "ToolSearch") ? [
       "For deferred tools, first invoke ToolSearch with query=\"select:<exact_tool_name>\" and max_results=5. Names in the client's deferred-tool catalog are available through that runner even if Quick has no corresponding connector. After ToolSearch returns the schema, invoke the discovered action and continue the task; discovery alone does not complete the requested operation.",
     ] : []),
@@ -125,29 +139,108 @@ export function buildClientToolReminder(tools: readonly NormalizedTool[], choice
     "[External client runner]",
     "The user's workspace and MCP servers belong to the external client, not the Quick cloud workspace. Use the client actions declared in the custom instructions for this task. Quick's files, sandbox, or connector inventory cannot establish whether the client's files or MCP servers exist.",
     `Callable client actions: ${tools.map((tool) => tool.name).join(", ")}.`,
-    "File creation is a client-workspace action: if the request asks to create, write, edit, save, or generate a file, immediately call a declared client file-writing tool with the requested content. Do not use Quick's internal artifact feature, return a qw-file:// link, or answer with the file contents instead of the tool call. Wait for the tool result before confirming the path.",
+    "Implementing or fixing a project implies the necessary client workspace actions, even without explicit filenames. Use the available client tools and wait for real results; do not substitute Quick internal artifacts or qw-file:// links. Answer ordinary conversation or explanation-only requests directly without changing files.",
     ...(tools.some((tool) => tool.name === "ToolSearch") ? ["Use ToolSearch to load deferred client tools before invoking them."] : []),
     'Invoke through <tool_call>{"name":"<declared_action>","arguments":{...}}</tool_call> and stop for the real result. Do the requested actions rather than giving instructions; never invent a result.',
   ].join("\n");
 }
 
-/**
- * Parse `<tool_call>{...}</tool_call>` blocks from model output text.
- */
+class MarkdownCodeState {
+  private fence = "";
+  private fenceLength = 0;
+  private inlineTicks = 0;
+  private delimiter = "";
+  private delimiterLength = 0;
+  private delimiterAtLineStart = false;
+  private lineIndent = 0;
+  private lineStart = true;
+
+  get insideCode(): boolean {
+    this.finishDelimiter();
+    return Boolean(this.fence || this.inlineTicks);
+  }
+
+  advance(text: string): void {
+    for (const char of text) {
+      if (char === "`" || char === "~") {
+        if (this.delimiter && this.delimiter !== char) this.finishDelimiter();
+        if (!this.delimiter) {
+          this.delimiter = char;
+          this.delimiterAtLineStart = this.lineStart && this.lineIndent <= 3;
+        }
+        this.delimiterLength++;
+        continue;
+      }
+      this.finishDelimiter();
+      if (char === "\n") {
+        this.lineStart = true;
+        this.lineIndent = 0;
+      } else if (this.lineStart && char === " ") {
+        this.lineIndent++;
+      } else if (char !== "\r") {
+        this.lineStart = false;
+      }
+    }
+  }
+
+  private finishDelimiter(): void {
+    if (!this.delimiter) return;
+    const char = this.delimiter;
+    const size = this.delimiterLength;
+    if (this.delimiterAtLineStart && size >= 3 && !this.inlineTicks) {
+      if (!this.fence) { this.fence = char; this.fenceLength = size; }
+      else if (this.fence === char && size >= this.fenceLength) this.fence = "";
+    } else if (!this.fence && char === "`") {
+      if (!this.inlineTicks) this.inlineTicks = size;
+      else if (this.inlineTicks === size) this.inlineTicks = 0;
+    }
+    this.lineStart = false;
+    this.delimiter = "";
+    this.delimiterLength = 0;
+  }
+}
+
+function toolCallEnd(text: string, from: number): number {
+  let inString = false;
+  let escaped = false;
+  for (let i = from; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+    } else if (char === '"') inString = true;
+    else if (text.startsWith(TOOL_CALL_CLOSE, i)) return i;
+  }
+  return -1;
+}
+
 export function parseToolCallsFromText(text: string): {
   cleanText: string;
   toolCalls: NormalizedToolCall[];
 } {
   const toolCalls: NormalizedToolCall[] = [];
-  const regex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
   let lastIdx = 0;
+  let searchFrom = 0;
   const textParts: string[] = [];
+  const markdown = new MarkdownCodeState();
 
-  for (const match of text.matchAll(regex)) {
-    const start = match.index ?? 0;
-    const rawBlock = (match[1] ?? "").trim();
+  while (searchFrom < text.length) {
+    const start = text.indexOf(TOOL_CALL_OPEN, searchFrom);
+    if (start < 0) break;
+    markdown.advance(text.slice(searchFrom, start));
+    searchFrom = start + TOOL_CALL_OPEN.length;
+    if (markdown.insideCode) {
+      markdown.advance(TOOL_CALL_OPEN);
+      continue;
+    }
+    const end = toolCallEnd(text, searchFrom);
+    if (end < 0) break;
+    const raw = text.slice(start, end + TOOL_CALL_CLOSE.length);
+    const rawBlock = text.slice(searchFrom, end).trim();
     textParts.push(text.slice(lastIdx, start));
-    lastIdx = start + match[0].length;
+    lastIdx = end + TOOL_CALL_CLOSE.length;
+    searchFrom = lastIdx;
 
     const unfenced = rawBlock
       .replace(/^```(?:json)?\s*/i, "")
@@ -157,7 +250,10 @@ export function parseToolCallsFromText(text: string): {
     try {
       const parsed = JSON.parse(unfenced) as Record<string, unknown>;
       const name = typeof parsed.name === "string" ? parsed.name.trim() : "";
-      if (!name) continue;
+      if (!name) {
+        textParts.push(raw);
+        continue;
+      }
       const rawArgs = parsed.arguments ?? parsed.input ?? {};
       const argsObject: Record<string, unknown> =
         typeof rawArgs === "string"
@@ -181,7 +277,7 @@ export function parseToolCallsFromText(text: string): {
       });
     } catch {
       // Malformed JSON inside <tool_call>: preserve raw block as text so nothing is silently lost.
-      textParts.push(match[0]);
+      textParts.push(raw);
     }
   }
 
@@ -200,6 +296,7 @@ export class StreamingToolCallFilter {
   private pending = "";
   private capturing = false;
   private captured = "";
+  private markdown = new MarkdownCodeState();
 
   feed(delta: string): string {
     if (!delta) return "";
@@ -208,13 +305,20 @@ export class StreamingToolCallFilter {
       return "";
     }
     const combined = this.pending + delta;
-    const openIdx = combined.indexOf(TOOL_CALL_OPEN);
-    if (openIdx !== -1) {
-      const before = combined.slice(0, openIdx);
-      this.capturing = true;
-      this.captured = combined.slice(openIdx);
-      this.pending = "";
-      return before;
+    let searchFrom = 0;
+    while (searchFrom < combined.length) {
+      const openIdx = combined.indexOf(TOOL_CALL_OPEN, searchFrom);
+      if (openIdx < 0) break;
+      this.markdown.advance(combined.slice(searchFrom, openIdx));
+      if (!this.markdown.insideCode) {
+        const before = combined.slice(0, openIdx);
+        this.capturing = true;
+        this.captured = combined.slice(openIdx);
+        this.pending = "";
+        return before;
+      }
+      this.markdown.advance(TOOL_CALL_OPEN);
+      searchFrom = openIdx + TOOL_CALL_OPEN.length;
     }
 
     // Hold back a potential partial prefix of `<tool_call>` at the tail of the chunk.
@@ -227,7 +331,9 @@ export class StreamingToolCallFilter {
       }
     }
     this.pending = holdLen > 0 ? combined.slice(combined.length - holdLen) : "";
-    return holdLen > 0 ? combined.slice(0, combined.length - holdLen) : combined;
+    const emit = holdLen > 0 ? combined.slice(0, combined.length - holdLen) : combined;
+    this.markdown.advance(emit.slice(searchFrom));
+    return emit;
   }
 
   flush(): { remainingText: string; toolCalls: NormalizedToolCall[] } {

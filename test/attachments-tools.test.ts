@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { uploadImageAttachment } from "../src/aws-quick/attachment-upload.js";
 import { toolContract } from "../src/core/tool-contract.js";
-import { buildClientToolReminder, buildToolBridgePrompt } from "../src/core/tool-bridge.js";
+import { buildClientCapabilityPrompt, buildClientToolReminder, buildToolBridgePrompt, parseToolCallsFromText, StreamingToolCallFilter } from "../src/core/tool-bridge.js";
 import { parseAnthropicMessagesRequest } from "../src/protocols/anthropic.js";
 import { QuickExecutionEngine, workingSessionIdForThread } from "../src/core/engine.js";
 import { loadConfigFromEnv } from "../src/core/config.js";
@@ -95,6 +95,57 @@ describe("Client tool contracts", () => {
     assert.doesNotThrow(() => validate([{ id: "call", name: "Read", argsObject: { path: "probe.txt" }, argumentsJson: '{"path":"probe.txt"}' }]));
     assert.throws(() => validate([{ id: "call", name: "Read", argsObject: { path: "" }, argumentsJson: '{"path":""}' }]));
     assert.throws(() => toolContract([{ name: "remote", inputSchema: { ...schema, $ref: "https://example.com/schema" } }], "auto", true));
+  });
+});
+
+describe("External API capability boundaries", () => {
+  const tools = [{ name: "workspace_apply", inputSchema: { type: "object" } }];
+  it("keeps absent and disabled tools in direct-answer mode", () => {
+    for (const prompt of [buildClientCapabilityPrompt([], "auto"), buildClientCapabilityPrompt(tools, "none")]) {
+      assert.match(prompt, /No client tools are callable/);
+      assert.match(prompt, /multi-file code/);
+      assert.doesNotMatch(prompt, /Carry out those actions/);
+    }
+  });
+  it("allows implicit project work while preserving explanation-only and conversational turns", () => {
+    const prompt = buildClientCapabilityPrompt(tools, "auto");
+    assert.match(prompt, /even when no filenames or tool names are given/);
+    assert.match(prompt, /do not write files/);
+    assert.match(prompt, /wait for the actual result/);
+    assert.doesNotMatch(prompt, /No client tools are callable/);
+  });
+});
+
+describe("Tool syntax in ordinary code answers", () => {
+  const call = '<tool_call>{"name":"workspace_write","arguments":{"path":"demo.txt","content":"ok"}}</tool_call>';
+  it("preserves fenced and inline tool examples at every stream boundary", () => {
+    for (const text of ['Example:\n```xml\n'+call+'\n```\nDone.', 'Example:\n~~~xml\n'+call+'\n~~~\nDone.', 'Example: `'+call+'`.', 'Example: ``'+call+'``.']) {
+      assert.equal(parseToolCallsFromText(text).toolCalls.length, 0);
+      for (let width = 1; width <= 17; width++) {
+        const filter = new StreamingToolCallFilter();
+        let out = '';
+        for (let i = 0; i < text.length; i += width) out += filter.feed(text.slice(i, i + width));
+        const end = filter.flush();
+        assert.equal(out + end.remainingText, text);
+        assert.equal(end.toolCalls.length, 0);
+      }
+    }
+  });
+  it("parses real actions after examples and preserves tool delimiters inside file content", () => {
+    const args = { path: 'protocol.md', content: 'Example: '+call+'\n\\quoted "text"' };
+    const action = '<tool_call>'+JSON.stringify({name:'workspace_write',arguments:args})+'</tool_call>';
+    const text = '```xml\n'+call+'\n```\n'+action;
+    const parsed = parseToolCallsFromText(text);
+    assert.equal(parsed.cleanText, '```xml\n'+call+'\n```');
+    assert.equal(parsed.toolCalls.length, 1);
+    assert.deepEqual(parsed.toolCalls[0]!.argsObject, args);
+    for (let width = 1; width <= 17; width++) {
+      const filter = new StreamingToolCallFilter();
+      for (let i = 0; i < text.length; i += width) filter.feed(text.slice(i, i + width));
+      const end = filter.flush();
+      assert.equal(end.toolCalls.length, 1);
+      assert.deepEqual(end.toolCalls[0]!.argsObject, args);
+    }
   });
 });
 

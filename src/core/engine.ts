@@ -35,6 +35,7 @@ import { getProxyAgent } from "../utils/proxy-agent.js";
 import { type UpstreamKeyPool, computeKeySlotId } from "./key-pool.js";
 import {
   buildToolBridgePrompt,
+  buildClientCapabilityPrompt,
   sanitizeClientSystemPromptForQuick,
   StreamingToolCallFilter,
 } from "./tool-bridge.js";
@@ -864,6 +865,7 @@ export class QuickExecutionEngine {
       );
     }
     if (toolBridgePrompt) customPromptParts.push(toolBridgePrompt);
+    customPromptParts.push(buildClientCapabilityPrompt(turn.tools, turn.toolChoice));
     const customPrompt = customPromptParts.length > 0 ? customPromptParts.join("\n\n") : null;
 
     const sourceImages = isWarmIncremental ? (turn.incrementalImages ?? []) : turn.images;
