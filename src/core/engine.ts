@@ -1,4 +1,5 @@
 import { toolContract } from "./tool-contract.js";
+import { QuotaReplyGuard } from "./quota-reply-guard.js";
 import { buildClientToolReminder } from "./tool-bridge.js";
 import { uploadImageAttachment, type NativeAttachment } from "../aws-quick/attachment-upload.js";
 import { routeSelection } from "../services/model-router.js";
@@ -1015,9 +1016,16 @@ export class QuickExecutionEngine {
     const queue: Array<GatewayStreamEvent | { type: "__error"; error: Error }> = [];
     let notify: (() => void) | null = null;
     let ended = false;
+    const quotaReplyGuard = new QuotaReplyGuard();
 
-    const push = (item: GatewayStreamEvent | { type: "__error"; error: Error }) => {
-      queue.push(item);
+    const push = (item: GatewayStreamEvent | { type: "__error"; error: Error }, syntheticThinking = false) => {
+      try {
+        queue.push(...(item.type === "__error" ? [item] : quotaReplyGuard.feed(item, syntheticThinking)));
+      } catch (error) {
+        ended = true;
+        queue.push({ type: "__error", error: error as Error });
+        try { ws.close(); } catch { }
+      }
       if (notify) {
         const fn = notify;
         notify = null;
@@ -1227,7 +1235,7 @@ export class QuickExecutionEngine {
               push({
                 type: "thinking",
                 text: `[AWS Quick] mode=${selection.agentMode} · effort=${selection.thinkingEffort} · routed=${routed}\n`,
-              });
+              }, true);
             }
           }
         } else if (evType === "text_delta") {
@@ -1259,7 +1267,7 @@ export class QuickExecutionEngine {
               push({
                 type: "thinking",
                 text: `[AWS Quick] mode=${selection.agentMode} · effort=${selection.thinkingEffort} · routed=${served}\n`,
-              });
+              }, true);
             }
           }
           this.usageTracker.recordTurn({
