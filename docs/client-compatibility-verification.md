@@ -52,3 +52,13 @@ CLI 使用独立 CLAUDE_CONFIG_DIR、空 setting-sources、strict-mcp-config。�
 同一测试此前任务 `537d80e0-976b-4d1c-a5f8-e0daa9476a43` 遇到传输截断：代理日志显示约 41 秒成功发出 8,988 字符，本机只收到 5,911 字符后 UND_ERR_SOCKET。保留为端到端失败样本，不计入通过。没有为重试修改提示或切换模型。
 
 旧镜像 `aws-quick/kuk-enhanced:d963fc134a2b` 保留。回滚脚本位于部署目录的 `backups/general-client-20261125T015032Z/rollback.sh`。
+
+## Opus think 过滤问题后续诊断
+
+2026-11-25 保留同一模型、原始提示、system 和工具定义，比较 Messages、Chat Completions、Responses 字符串及数组输入，各两次：8 个首轮样本中 7 次过滤、1 次返回真实工具调用。隔离抓取的上游原始事件为 `type=error`、`error_code=content_filtered`，错误文本为 `The model's content filter stopped this reply. Rephrase, or start a new chat.`。代理没有误分类普通网络异常，上游也未返回具体规则或可修正字段。
+
+检查同时发现 Responses 的一个确定兼容问题：字符串输入原样传递，等价的单条 user 消息数组却添加 `[USER]:` 包装。已统一两者，保留多轮历史的角色和工具结果。新增回归覆盖字符串、消息数组、input_text 块与多轮保留；54 项测试、类型检查和 preflight 通过。
+
+该修正不等于解决过滤：修正后原始请求三个首轮样本为两次工具调用、一次过滤，随后两次完整循环尝试均在首轮过滤。样本小且存在波动，不能据此宣称成功率提高。同模型的普通问答、自然编程和普通记录查询首轮均正常，但替代任务的通过不算原任务修复。
+
+结论：Responses 输入一致性已修正；该条 Opus think 上游过滤仍未解决。没有加入绕过审核的提示、自动更换模型/强度、遇过滤反复重试或把错误包装为成功。诊断记录与无密钥复现脚本存放于仓库外 `outputs/awsq-filter-diagnostic-20261125/`。

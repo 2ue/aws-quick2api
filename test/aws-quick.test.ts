@@ -154,6 +154,22 @@ describe("Credential parser & ClientKeyStore", () => {
     assert.equal(atts[1]!.mimeType, "image/jpeg");
   });
 
+  it("normalizes equivalent Responses input forms without adding a user role to a single turn", () => {
+    const text = "Read the current project and explain its structure.";
+    const base = { model: "claude-opus-5-5-think", instructions: "Answer concisely." };
+    const plain = parseResponsesRequest({ ...base, input: text });
+    const message = parseResponsesRequest({ ...base, input: [{ role: "user", content: text }] });
+    const blocks = parseResponsesRequest({ ...base, input: [{ role: "user", content: [{ type: "input_text", text }] }] });
+    for (const turn of [message, blocks]) {
+      assert.equal(turn.fullTranscriptText, plain.fullTranscriptText);
+      assert.equal(turn.currentInputPrefixHash, plain.currentInputPrefixHash);
+      assert.equal(turn.systemPrompt, plain.systemPrompt);
+    }
+    const history = parseResponsesRequest({ ...base, input: [{ role: "user", content: "Earlier" }, { role: "assistant", content: "Acknowledged" }, { role: "user", content: text }] });
+    assert.match(history.fullTranscriptText, /\[USER\]:\nEarlier/);
+    assert.match(history.fullTranscriptText, /\[ASSISTANT\]:\nAcknowledged/);
+  });
+
   it("bridges client tool schemas and parses streaming <tool_call> blocks", () => {
     const prompt = buildToolBridgePrompt(
       [{ name: "get_weather", description: "Get city weather", inputSchema: { type: "object", properties: { city: { type: "string" } } } }],

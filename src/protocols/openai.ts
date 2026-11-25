@@ -519,7 +519,9 @@ export function parseResponsesRequest(
   }
 
   const systemJoined = systemParts.join("\n\n");
-  const fullTranscriptText = transcriptLines.join("\n\n");
+  const fullTranscriptText = items.length === 1 && items[0].role === "user" && !items[0].hasTools
+    ? (items[0].text || (items[0].images.length ? "[Image]" : ""))
+    : transcriptLines.join("\n\n");
   const toolSig = (toolChoice === "none" ? [] : tools).map((t) => t.name).join(",");
   const prefixHashes = computeDialogPrefixHashes({
     systemPrompt: systemJoined,
