@@ -9,4 +9,5 @@
 
 - [限额自动查额度验收](../limit-quota-probe-verification.md)：同账号合并与节流、全局有界并发、迟到结果保护；77项回归，87候选20并发只查1次真实额度，候选/生产三协议各6/6通过。
 
-- [yuanzhang JSON 导入](../yuanzhang-json-import.md)：本地实现完成，89 项回归与 13 账号只读转换核对通过；默认原生 JSON 不自动兼容，已授权在 17 构建部署最新版本。
+- [yuanzhang JSON 导入](../yuanzhang-json-import.md)：实现与 17 部署完成，89 项回归、13 账号去重、候选三协议及正式内网验证通过；默认原生 JSON 不自动兼容。
+- [17 部署与内网接入](../deployment-17.md)：35 账号复制，sub2api-b 账号 2471 仅改名称与 base_url，经已有 services-internal 网络访问；其它服务未重启。
