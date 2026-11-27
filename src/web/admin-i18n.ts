@@ -45,6 +45,7 @@ const EXACT_ZH: Record<string, string> = {
   "Invalid AWS Quick credential (use `local-outpost` or an `id_token`).": "无效的 AWS Quick 凭证（请填入 local-outpost 或有效的 id_token）。",
   "This AWS Quick credential already exists in the pool.": "该 AWS Quick 凭证已存在于号池中。",
   "Malformed JSON request body.": "请求体 JSON 格式错误。",
+  "yuanzhang JSON requires a non-empty `accounts` array.": "yuanzhang JSON 格式需要非空的 accounts 数组，请确认已选择正确的导入格式。",
   "Content-Type must be application/json.": "Content-Type 必须为 application/json。",
   "Failed to read request body.": "读取请求体失败。",
   "No enabled upstream AWS Quick credentials available.": "当前没有可用的上游 AWS Quick 凭证。",
@@ -86,6 +87,9 @@ export function localizeAdminMessage(msg: string, lang: AdminLang): string {
   }
 
   if (EXACT_ZH[msg]) return EXACT_ZH[msg];
+
+  const yuanzhangField = /^Invalid yuanzhang JSON field: (accounts\[\d+\](?:\.[a-z_]+)*)\.$/.exec(msg);
+  if (yuanzhangField) return `yuanzhang JSON 字段缺失或格式无效：${yuanzhangField[1]}。`;
 
   const tooLarge = /^Request body exceeds limit of (\d+) bytes\.$/.exec(msg);
   if (tooLarge) return `请求体大小超过限制（上限 ${tooLarge[1]} 字节）。`;

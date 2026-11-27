@@ -963,7 +963,6 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
               <div style="display:flex;gap:6px;flex-wrap:wrap;">
                 <button type="button" id="credClearSessionsBtn">清理会话</button>
                 <button type="button" id="credBatchImportBtn">导入 JSON</button>
-                <input type="file" id="credBatchImportFile" accept=".json,application/json" style="display:none;" />
                 <button type="button" id="credExportBtn">导出 JSON</button>
                 <button type="button" id="credBatchEnableBtn">批量启用</button>
                 <button type="button" id="credBatchDisableBtn">批量停用</button>
@@ -1306,10 +1305,15 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
             <span>JSON 备份批量恢复</span>
             <span class="oauth-step-tag">保留备注与代理</span>
           </div>
+          <label class="field-lbl" for="batchJsonFormatSelect">JSON 导入格式</label>
+          <select id="batchJsonFormatSelect" style="width:100%;">
+            <option value="native" selected>原生 JSON 备份（默认）</option>
+            <option value="yuanzhang">yuanzhang JSON 格式</option>
+          </select>
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border:1px dashed var(--border-strong);border-radius:7px;background:var(--panel);">
             <div style="font-size:12px;color:var(--fg-muted);line-height:1.45;">
               <div style="color:var(--fg);font-weight:500;" id="batchFileStatusLabel">上传 JSON 备份文件</div>
-              <div>支持「导出 JSON」生成的备份，自动还原备注、独立代理与启停状态</div>
+              <div id="batchJsonFormatHint">支持「导出 JSON」生成的备份，自动还原备注、独立代理与启停状态</div>
             </div>
             <button type="button" class="btn-xs" id="importJsonFileBtn" style="flex-shrink:0;">选择文件</button>
             <input type="file" id="importJsonFileInput" accept=".json,application/json" style="display:none;" />
@@ -1695,6 +1699,9 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
       "确认创建新 Key 并导入": "Create & Import New Key",
       "取消": "Cancel",
       "确认导入并同步额度": "Import & Sync Quotas",
+      "JSON 导入格式": "JSON import format",
+      "原生 JSON 备份（默认）": "Native JSON backup (default)",
+      "yuanzhang JSON 格式": "yuanzhang JSON format",
       "创建网关子密钥": "Create Client Sub-Key",
       "密钥名称备注": "Sub-Key Name",
       "例如：分享给前端组 Key / 临时测试 Key": "e.g. Frontend Team / Dev Key",
@@ -2745,33 +2752,11 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
     if ($("credSortFilter")) $("credSortFilter").onchange = renderCredTable;
     if ($("ovManageCredsBtn")) $("ovManageCredsBtn").onclick = () => switchTab("credentials");
 
-    if ($("credBatchImportBtn") && $("credBatchImportFile")) {
-      $("credBatchImportBtn").onclick = () => $("credBatchImportFile").click();
-      $("credBatchImportFile").onchange = async (ev) => {
-        const file = ev.target.files && ev.target.files[0];
-        if (!file) return;
-        const btn = $("credBatchImportBtn");
-        btn.disabled = true;
-        const origText = btn.textContent;
-        btn.textContent = tr("导入中...", "Importing...");
-        try {
-          const text = await file.text();
-          let parsed;
-          try {
-            parsed = JSON.parse(text);
-          } catch {
-            throw new Error(tr("文件不是有效的 JSON 格式。", "Invalid JSON file."));
-          }
-          const r = await api("/v1/admin/keys/import-json", { method: "POST", body: JSON.stringify(parsed) });
-          notify(tr("已从 JSON 文件批量导入 " + (r.imported || 0) + " 条凭证并同步额度。", "Imported " + (r.imported || 0) + " credential(s) from JSON."));
-          await loadConsoleData("?force=1");
-        } catch (e) {
-          notify(tr("批量导入失败: ", "Batch import failed: ") + e.message, true);
-        } finally {
-          btn.disabled = false;
-          btn.textContent = origText;
-          $("credBatchImportFile").value = "";
-        }
+    if ($("credBatchImportBtn")) {
+      $("credBatchImportBtn").onclick = () => {
+        resetBatchJsonFormat();
+        switchAddMode("batch");
+        $("addModal").classList.add("open");
       };
     }
 
@@ -3694,6 +3679,34 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
       } catch (e) { notify(e.message, true); }
     };
 
+    function batchJsonFormat() {
+      return $("batchJsonFormatSelect") && $("batchJsonFormatSelect").value === "yuanzhang" ? "yuanzhang" : "native";
+    }
+    function updateBatchJsonFormat() {
+      const yuanzhang = batchJsonFormat() === "yuanzhang";
+      $("batchJsonFormatHint").textContent = yuanzhang
+        ? tr("仅按 yuanzhang 格式读取 accounts、session 和 upstream，保留备注与启停状态；重复凭证跳过。", "Read accounts, session and upstream in yuanzhang format. Preserve labels and status; skip duplicate credentials.")
+        : tr("支持「导出 JSON」生成的备份，自动还原备注、独立代理与启停状态", "Restore a native JSON export, including labels, individual proxies and enabled status.");
+      $("modalBatchJsonInput").placeholder = yuanzhang
+        ? '{"accounts":[{"session":{...},"upstream":{"tokens":{...},"client":{...}}}]}'
+        : '[{"apiKey":"oauth:...","label":"Account 1","enabled":true}]';
+    }
+    function resetBatchJsonFormat() {
+      $("batchJsonFormatSelect").value = "native";
+      syncSelectUi($("batchJsonFormatSelect"));
+      updateBatchJsonFormat();
+    }
+    function batchJsonCount(parsed) {
+      const list = batchJsonFormat() === "yuanzhang"
+        ? (parsed && Array.isArray(parsed.accounts) ? parsed.accounts : [])
+        : (Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.credentials) ? parsed.credentials : []));
+      return list.length;
+    }
+    function batchJsonEndpoint() {
+      return batchJsonFormat() === "yuanzhang" ? "/v1/admin/keys/import-yuanzhang-json" : "/v1/admin/keys/import-json";
+    }
+    if ($("batchJsonFormatSelect")) $("batchJsonFormatSelect").onchange = updateBatchJsonFormat;
+
     let activeAddMode = "oauth";
     function switchAddMode(mode) {
       activeAddMode = mode === "curl" || mode === "batch" ? mode : "oauth";
@@ -3813,6 +3826,7 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
 
     document.querySelectorAll("[data-open-add-modal]").forEach((b) => {
       b.onclick = () => {
+        resetBatchJsonFormat();
         if ($("oauthAccountTypeSelect")) {
           $("oauthAccountTypeSelect").value = "personal";
           syncSelectUi($("oauthAccountTypeSelect"));
@@ -4001,8 +4015,8 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
           let countHint = "";
           try {
             const p = JSON.parse(text);
-            const arr = Array.isArray(p) ? p : (p && Array.isArray(p.credentials) ? p.credentials : []);
-            if (arr.length > 0) countHint = tr("（共 " + arr.length + " 条凭证）", " (" + arr.length + " credentials)");
+            const count = batchJsonCount(p);
+            if (count > 0) countHint = tr("（共 " + count + " 条凭证）", " (" + count + " credentials)");
           } catch {}
           if ($("batchFileStatusLabel")) {
             $("batchFileStatusLabel").textContent = tr("已选择：", "Selected: ") + file.name + countHint;
@@ -4031,12 +4045,14 @@ export function renderDashboardHtml(dashboardPath = "/dashboard", nonce = ""): s
           } catch {
             throw new Error(tr("内容不是有效的 JSON 格式。", "Invalid JSON syntax."));
           }
-          const r = await api("/v1/admin/keys/import-json", { method: "POST", body: JSON.stringify(parsed) });
+          const yuanzhang = batchJsonFormat() === "yuanzhang";
+          const r = await api(batchJsonEndpoint(), { method: "POST", body: JSON.stringify(parsed) });
           if ($("modalBatchJsonInput")) $("modalBatchJsonInput").value = "";
           if ($("batchFileStatusLabel")) $("batchFileStatusLabel").textContent = tr("上传 JSON 备份文件", "Upload JSON backup file");
           closeAddModal();
-          notify(tr("已从 JSON 备份成功导入 " + (r.imported || 0) + " 条凭证并同步额度。", "Imported " + (r.imported || 0) + " credential(s) from JSON."));
-          await loadConsoleData("?force=1");
+          notify(tr("已从 JSON 备份成功导入 " + (r.imported || 0) + " 条凭证并同步额度。", "Imported " + (r.imported || 0) + " credential(s) from JSON.") +
+            (r.skipped ? tr(" 跳过 " + r.skipped + " 条重复凭证。", " Skipped " + r.skipped + " duplicate credential(s).") : ""));
+          await loadConsoleData(yuanzhang ? "" : "?force=1");
         } catch (e) {
           notify(tr("批量导入失败: ", "Batch import failed: ") + e.message, true);
         } finally {

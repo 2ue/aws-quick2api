@@ -14,7 +14,7 @@ import { getSharedOutpost, parseQuickCredential } from "../aws-quick/outpost-sin
 import { listWebCloudSessions } from "../aws-quick/web-client.js";
 import type { SDKModel } from "../aws-quick/types.js";
 import type { QuickExecutionEngine } from "../core/engine.js";
-import type { PoolRoutingSettings, UpstreamKeyPool } from "../core/key-pool.js";
+import { computeKeySlotId, type PoolRoutingSettings, type UpstreamKeyPool } from "../core/key-pool.js";
 import { GatewayError, type GatewayConfig, type GatewayStreamEvent } from "../core/types.js";
 import { isRecord } from "../protocols/common.js";
 import { openAiChatAdapter } from "../protocols/openai.js";
@@ -25,6 +25,7 @@ import type { UsageLedger, LedgerRange } from "../services/usage-ledger.js";
 import type { AccountQuotaReport } from "../services/quota-service.js";
 import type { RequestTraceLogger } from "../services/request-logger.js";
 import { checkLatestVersion } from "../services/update-checker.js";
+import { parseYuanzhangJson } from "../services/yuanzhang-import.js";
 import type { UsageTracker } from "../services/usage-tracker.js";
 import { AdminAuthManager, clientIpOf, isDirectLoopbackRequest } from "./admin-auth.js";
 import { resolveAdminLang } from "./admin-i18n.js";
@@ -466,6 +467,27 @@ export async function tryHandleWebAdminRoute(
         ...(k.proxyUrl ? { proxyUrl: k.proxyUrl } : {}),
       })),
     });
+    return true;
+  }
+
+  if (route === "/v1/admin/keys/import-yuanzhang-json" && req.method === "POST") {
+    const entries = parseYuanzhangJson(await readJsonBody(req, config.maxBodyBytes));
+    const existing = new Set(keyPool.allManagedKeys().map((key) => key.slotId));
+    const added: string[] = [];
+    let skipped = 0;
+    let imported = 0;
+    for (const entry of entries) {
+      const slotId = computeKeySlotId(entry.apiKey);
+      if (existing.has(slotId)) { skipped++; continue; }
+      const slot = keyPool.addKey(entry.apiKey, entry.enabled, entry.label, entry.proxyUrl);
+      existing.add(slot.slotId);
+      imported++;
+      if (slot.enabled) added.push(slot.slotId);
+    }
+    if (added.length) {
+      await ctx.syncKeyQuotas({ slotIds: added }).catch(() => undefined);
+    }
+    sendJson(res, 200, { ok: true, format: "yuanzhang", imported, skipped, keyPool: keyPool.statusSnapshot() });
     return true;
   }
 

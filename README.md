@@ -101,6 +101,14 @@ flowchart LR
 
 ![粘贴 cURL 完成导入](./docs/screenshots/cookie-step2-import.png)
 
+### 方式三：yuanzhang JSON 格式导入
+
+在「凭证与额度池」点击 **「导入 JSON」**，或进入「+ 添加凭证 → 批量导入」，将 **「JSON 导入格式」手动切换为「yuanzhang JSON 格式」**，再选择文件或粘贴内容，点击确认导入。
+
+支持顶层 `accounts` 数组、账号内包含 `session` 与 `upstream.tokens / upstream.client` 的 JSON 备份。导入保留账号备注、邮箱与姓名、启停状态和 OAuth 自动刷新凭证；秒级 `session.usable_until` 转为内部毫秒时间。短期访问令牌过期时使用刷新令牌续期。相同 OAuth 账号槽位会跳过，避免旧备份覆盖已更新的令牌或启停状态。
+
+默认选项始终是「原生 JSON 备份」，不会自动识别 yuanzhang 格式。每次重新打开导入窗口都会恢复默认选项。独立 API 为 `POST /v1/admin/keys/import-yuanzhang-json`，请求体直接传入该格式 JSON，使用管理员会话鉴权；原生导入 API 保持原样。源程序的 active_id、分组、优先级和代理池引用不会改变本网关的路由配置。详见[格式与验证说明](docs/yuanzhang-json-import.md)。
+
 ---
 
 ## 模型映射与实测路由参考
